@@ -1,0 +1,139 @@
+.analytics-container {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-4);
+  max-width: 1400px;
+  margin: 0 auto;
+  padding-bottom: var(--spacing-6);
+}
+
+.analytics-header {
+  margin-bottom: var(--spacing-2);
+}
+
+.analytics-header h1 {
+  display: flex;
+  align-items: center;
+  font-size: 32px;
+  margin-bottom: 8px;
+}
+
+.analytics-card {
+  padding: var(--spacing-4);
+  border-radius: var(--radius-xl);
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.analytics-card:hover {
+  box-shadow: var(--shadow-md);
+}
+
+.analytics-title {
+  font-size: 20px;
+  font-weight: 700;
+  margin-bottom: var(--spacing-4);
+  color: var(--text-primary);
+}
+
+.chart-container {
+  width: 100%;
+  height: 350px;
+}
+
+.analytics-grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--spacing-4);
+}
+
+.radar-container {
+  width: 100%;
+  height: 300px;
+}
+
+/* Weak Topics List */
+.weak-topics-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-3);
+  flex-grow: 1;
+}
+
+.alert-badge {
+  font-size: 13px;
+  font-weight: 600;
+  background: rgba(244, 63, 94, 0.1);
+  color: var(--color-physics-red);
+  padding: 6px 12px;
+  border-radius: var(--radius-pill);
+}
+
+.weak-topic-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--spacing-3);
+  border-radius: var(--radius-lg);
+  background-color: var(--card-bg-solid);
+  border: 1px solid var(--border-color);
+  transition: all 0.2s ease;
+}
+
+.weak-topic-card:hover {
+  transform: translateX(4px);
+  border-color: var(--color-dashboard-blue);
+  box-shadow: var(--shadow-sm);
+}
+
+.weak-topic-info {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-3);
+}
+
+.weak-topic-icon-wrapper {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.weak-topic-text h4 {
+  margin: 0 0 4px 0;
+  font-size: 16px;
+}
+
+.weak-topic-text p {
+  margin: 0;
+  font-size: 13px;
+}
+
+.btn-icon-circle {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background-color: var(--bg-color);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  transition: all 0.2s ease;
+}
+
+.btn-icon-circle:hover {
+  background-color: var(--color-dashboard-blue);
+  color: white;
+  transform: scale(1.1);
+}
+
+.topic-accuracy-container {
+  width: 100%;
+  height: 250px;
+}

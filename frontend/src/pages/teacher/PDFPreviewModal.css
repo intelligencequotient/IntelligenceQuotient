@@ -1,0 +1,181 @@
+.pdf-preview-page {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background-color: var(--color-teacher-navy-dark);
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+}
+
+.preview-toolbar {
+  background-color: var(--color-teacher-navy-mid);
+  padding: var(--spacing-3) var(--spacing-4);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  color: white;
+}
+
+.toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-3);
+}
+
+.toolbar-left h2 {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 500;
+}
+
+.badge {
+  background-color: rgba(99, 102, 241, 0.2);
+  color: #818cf8;
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  font-size: 0.8rem;
+  font-weight: 600;
+  border: 1px solid rgba(99, 102, 241, 0.3);
+}
+
+.toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-3);
+}
+
+.icon-close {
+  color: rgba(255, 255, 255, 0.6);
+  margin-left: var(--spacing-2);
+  transition: color 0.2s;
+}
+.icon-close:hover { color: white; }
+
+.btn-outline {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  color: white;
+  padding: 8px 16px;
+  border-radius: var(--radius-md);
+  font-weight: 500;
+}
+.btn-outline:hover { background: rgba(255, 255, 255, 0.1); }
+
+.pdf-document-container {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--spacing-5);
+  display: flex;
+  justify-content: center;
+}
+
+/* The actual "Paper" */
+.pdf-page {
+  background: white;
+  width: 210mm; /* A4 width */
+  min-height: 297mm; /* A4 height */
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+  padding: 20mm;
+  display: flex;
+  flex-direction: column;
+  color: black;
+  font-family: 'Times New Roman', Times, serif; /* Print style font */
+}
+
+.exam-header {
+  margin-bottom: 20px;
+}
+
+.institution-info {
+  text-align: center;
+  margin-bottom: 20px;
+}
+.institution-info h1 { margin: 0; font-size: 24px; text-transform: uppercase; letter-spacing: 1px; }
+.institution-info p { margin: 4px 0 0 0; font-style: italic; }
+
+.exam-meta-box {
+  border: 2px solid black;
+  padding: 12px;
+  margin-bottom: 15px;
+}
+
+.exam-title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+  border-bottom: 1px solid #ccc;
+  padding-bottom: 8px;
+}
+
+.exam-title-row h2 { margin: 0; font-size: 18px; }
+.exam-subject { font-weight: bold; font-size: 16px; text-transform: uppercase; }
+
+.exam-details-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 14px;
+}
+
+.student-fill-info {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 15px;
+  gap: 20px;
+}
+
+.fill-line {
+  display: flex;
+  flex: 1;
+  align-items: flex-end;
+  gap: 8px;
+}
+.fill-line .line { flex: 1; border-bottom: 1px dashed black; height: 18px; }
+
+.instructions {
+  font-size: 13px;
+  border: 1px solid #ddd;
+  padding: 10px;
+  background-color: #f9f9f9;
+}
+.instructions ul { margin: 4px 0 0 20px; padding: 0; }
+
+.divider {
+  border: none;
+  border-top: 2px solid black;
+  margin: 15px 0 20px 0;
+}
+
+.questions-section {
+  flex: 1;
+}
+
+.question-item {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 25px;
+  font-size: 15px;
+  line-height: 1.4;
+}
+
+.q-number { font-weight: bold; width: 30px; }
+
+.q-content { flex: 1; }
+.q-content p { margin: 0 0 10px 0; }
+
+.options-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.page-footer {
+  margin-top: auto;
+  border-top: 1px solid #ccc;
+  padding-top: 10px;
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: #666;
+}

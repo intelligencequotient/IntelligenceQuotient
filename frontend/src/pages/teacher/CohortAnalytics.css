@@ -1,0 +1,138 @@
+.cohort-analytics {
+  padding: var(--spacing-4);
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.page-header {
+  margin-bottom: var(--spacing-4);
+}
+
+.page-header h1 {
+  font-size: 1.875rem;
+  color: var(--color-teacher-navy-dark);
+  margin-bottom: var(--spacing-1);
+}
+
+.analytics-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--spacing-4);
+}
+
+.chart-card {
+  background: var(--card-bg);
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-4);
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--border-color);
+}
+
+.chart-card h2 {
+  font-size: 1.125rem;
+  color: var(--text-primary);
+  margin-bottom: var(--spacing-4);
+}
+
+.chart-container {
+  height: 300px;
+}
+
+.missed-concepts-card {
+  background: var(--card-bg);
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-4);
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--border-color);
+  grid-column: 1 / -1; /* Span full width */
+}
+
+.missed-concepts-card h2 {
+  font-size: 1.125rem;
+  color: var(--text-primary);
+  margin-bottom: var(--spacing-4);
+}
+
+.concepts-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-3);
+}
+
+.concept-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--spacing-3);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background-color: var(--bg-color);
+  transition: border-color 0.2s;
+}
+
+.concept-item:hover {
+  border-color: var(--color-teacher-accent);
+}
+
+.concept-info h3 {
+  font-size: 1rem;
+  margin-bottom: var(--spacing-1);
+  color: var(--text-primary);
+}
+
+.subject-tag {
+  font-size: 0.75rem;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  font-weight: 500;
+}
+
+.subject-tag.mathematics { background-color: rgba(27, 169, 160, 0.1); color: var(--color-math-teal); }
+.subject-tag.physics { background-color: rgba(240, 41, 92, 0.1); color: var(--color-physics-red); }
+.subject-tag.chemistry { background-color: rgba(245, 146, 27, 0.1); color: var(--color-chemistry-orange); }
+.subject-tag.biology { background-color: rgba(63, 174, 92, 0.1); color: var(--color-biology-green); }
+
+.concept-stats {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-4);
+}
+
+.stat-group {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.stat-label {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.stat-value {
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.stat-value.danger {
+  color: var(--color-danger);
+}
+
+.difficulty-badge {
+  font-size: 0.75rem;
+  padding: 4px 12px;
+  border-radius: var(--radius-pill);
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.difficulty-badge.hard { background-color: rgba(239, 68, 68, 0.1); color: var(--color-danger); }
+.difficulty-badge.medium { background-color: rgba(245, 158, 11, 0.1); color: var(--color-warning); }
+.difficulty-badge.easy { background-color: rgba(34, 197, 94, 0.1); color: var(--color-success); }
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .analytics-grid {
+    grid-template-columns: 1fr;
+  }
+}

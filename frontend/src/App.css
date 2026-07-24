@@ -1,0 +1,16 @@
+.app-layout {
+  display: flex;
+  min-height: 100vh;
+  background-color: var(--bg-color);
+}
+
+.main-content {
+  flex: 1;
+  padding: var(--spacing-3);
+  overflow-y: auto;
+}
+
+.locked-layout {
+  min-height: 100vh;
+  background-color: var(--bg-color);
+}

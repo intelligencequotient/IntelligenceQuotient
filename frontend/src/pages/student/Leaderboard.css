@@ -1,0 +1,313 @@
+.leaderboard-container {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-4);
+  max-width: 1400px;
+  margin: 0 auto;
+  padding-bottom: var(--spacing-6);
+}
+
+.leaderboard-hero {
+  background: var(--card-bg-solid);
+  border-radius: var(--radius-xl);
+  padding: var(--spacing-4) var(--spacing-5);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  box-shadow: var(--shadow-sm);
+  position: relative;
+  overflow: hidden;
+}
+
+.leaderboard-hero::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 150px;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(59, 130, 246, 0.05));
+}
+
+.leaderboard-hero-content h1 {
+  font-size: 32px;
+  margin-bottom: 8px;
+}
+
+.leaderboard-hero-content p {
+  font-size: 16px;
+  margin: 0;
+}
+
+.leaderboard-content {
+  display: grid;
+  grid-template-columns: 1fr 300px;
+  gap: var(--spacing-4);
+  align-items: start;
+}
+
+.leaderboard-main {
+  border-radius: var(--radius-xl);
+  padding: 0;
+  overflow: hidden;
+  box-shadow: var(--shadow-md);
+}
+
+/* Controls */
+.leaderboard-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--spacing-3) var(--spacing-4);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.search-bar-lb {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-color);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-pill);
+  padding: 8px 16px;
+  color: var(--text-secondary);
+}
+
+.search-bar-lb input {
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 14px;
+  color: var(--text-primary);
+  outline: none;
+  width: 220px;
+}
+
+.search-bar-lb input::placeholder {
+  color: var(--text-secondary);
+}
+
+.showing-count {
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.table-header {
+  padding: var(--spacing-3) var(--spacing-4);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.table-card-title {
+  font-size: 20px;
+  margin: 0;
+}
+
+.table-responsive {
+  overflow-x: auto;
+}
+
+.leaderboard-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+}
+
+.leaderboard-table th {
+  padding: var(--spacing-2) var(--spacing-4);
+  color: var(--text-secondary);
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+  background-color: rgba(243, 246, 250, 0.5);
+}
+
+.leaderboard-table td {
+  padding: var(--spacing-2) var(--spacing-4);
+  border-bottom: 1px solid var(--border-color);
+  font-size: 15px;
+  color: var(--text-primary);
+  font-weight: 500;
+  transition: background-color 0.2s ease;
+}
+
+.leaderboard-table tbody tr:hover td {
+  background-color: rgba(243, 246, 250, 0.8);
+}
+
+.leaderboard-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.current-user-row td {
+  background-color: rgba(59, 130, 246, 0.05) !important;
+}
+
+.rank-cell {
+  width: 60px;
+  text-align: center;
+}
+
+.rank-number {
+  font-weight: 700;
+  color: var(--text-secondary);
+  font-size: 16px;
+}
+
+.student-cell {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-3);
+}
+
+.student-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background-color: var(--border-color);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  color: var(--text-secondary);
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.avatar-active {
+  background-color: var(--color-dashboard-blue);
+  color: white;
+  box-shadow: var(--shadow-glow);
+}
+
+.student-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.you-badge {
+  background-color: var(--color-dashboard-blue);
+  color: white;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.score-cell {
+  font-weight: 700;
+  color: var(--color-dashboard-blue);
+}
+
+.accuracy-cell {
+  font-weight: 600;
+  color: var(--color-biology-green);
+}
+
+/* Pagination */
+.pagination-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--spacing-3) var(--spacing-4);
+  border-top: 1px solid var(--border-color);
+}
+
+.page-info {
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
+.page-btns {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.page-btn {
+  min-width: 36px;
+  height: 36px;
+  padding: 0 8px;
+  border-radius: var(--radius-md);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--bg-color);
+  border: 1px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.page-btn:hover:not(:disabled) {
+  background: var(--color-dashboard-blue);
+  color: white;
+  border-color: var(--color-dashboard-blue);
+}
+
+.page-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.active-page {
+  background: var(--color-dashboard-blue);
+  color: white;
+  border-color: var(--color-dashboard-blue);
+  font-weight: 600;
+}
+
+/* Filter Sidebar */
+.leaderboard-filter {
+  border-radius: var(--radius-xl);
+  padding: var(--spacing-4);
+  box-shadow: var(--shadow-sm);
+  position: sticky;
+  top: var(--spacing-4);
+}
+
+.filter-title {
+  font-size: 18px;
+  font-weight: 700;
+  margin-bottom: var(--spacing-3);
+  padding-bottom: var(--spacing-2);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.filter-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.hidden-radio {
+  display: none;
+}
+
+.filter-label {
+  cursor: pointer;
+}
+
+.filter-text {
+  display: block;
+  padding: 12px 16px;
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+
+.filter-label:hover .filter-text {
+  background-color: rgba(243, 246, 250, 0.8);
+}
+
+.filter-label.active .filter-text {
+  background-color: var(--color-dashboard-blue);
+  color: white;
+  font-weight: 600;
+  box-shadow: var(--shadow-glow);
+}

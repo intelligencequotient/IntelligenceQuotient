@@ -1,0 +1,7 @@
+# Ignore node_modules and env files
+node_modules/
+dist/
+.env
+.env.local
+.env.production
+*.log

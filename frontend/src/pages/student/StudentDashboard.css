@@ -1,0 +1,328 @@
+.dashboard-container {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-4);
+  max-width: 1400px;
+  margin: 0 auto;
+  padding-bottom: var(--spacing-6);
+}
+
+/* Premium Hero Banner */
+.hero-banner {
+  position: relative;
+  background: linear-gradient(135deg, var(--color-dashboard-blue), #1e3a8a);
+  border-radius: var(--radius-xl);
+  padding: var(--spacing-5) var(--spacing-6);
+  color: white;
+  box-shadow: var(--shadow-lg), var(--shadow-glow);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.hero-content {
+  position: relative;
+  z-index: 2;
+  max-width: 60%;
+}
+
+.hero-content h1 {
+  color: white;
+  font-size: 36px;
+  margin-bottom: var(--spacing-2);
+  letter-spacing: -0.03em;
+}
+
+.hero-content p {
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 18px;
+  margin-bottom: var(--spacing-4);
+  line-height: 1.5;
+}
+
+.btn-glow {
+  background: white;
+  color: var(--color-dashboard-blue);
+  padding: 14px 28px;
+  border-radius: var(--radius-pill);
+  font-weight: 600;
+  font-size: 16px;
+  box-shadow: 0 4px 15px rgba(255, 255, 255, 0.3);
+}
+
+.btn-glow:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(255, 255, 255, 0.4);
+}
+
+.hero-decoration {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 50%;
+  overflow: hidden;
+  z-index: 1;
+}
+
+.circle {
+  position: absolute;
+  border-radius: 50%;
+  background: linear-gradient(135deg, rgba(255,255,255,0.1), rgba(255,255,255,0.0));
+  backdrop-filter: blur(5px);
+}
+
+.circle-1 {
+  width: 300px;
+  height: 300px;
+  top: -50px;
+  right: -50px;
+}
+
+.circle-2 {
+  width: 200px;
+  height: 200px;
+  bottom: -40px;
+  right: 150px;
+}
+
+/* Section Header */
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+}
+
+.section-header h2 {
+  font-size: 24px;
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.view-all-link {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--color-dashboard-blue);
+  font-weight: 500;
+  font-size: 14px;
+  transition: all 0.2s ease;
+}
+
+.view-all-link:hover {
+  gap: 8px;
+}
+
+.mt-4 {
+  margin-top: var(--spacing-2);
+}
+
+/* KPI Grid */
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--spacing-3);
+}
+
+.kpi-card {
+  padding: var(--spacing-4);
+  border-radius: var(--radius-lg);
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-3);
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.kpi-card:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow-md);
+}
+
+.kpi-icon-wrapper {
+  width: 56px;
+  height: 56px;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.kpi-info {
+  display: flex;
+  flex-direction: column;
+}
+
+.kpi-label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.kpi-value {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.1;
+}
+
+/* Subject Grid */
+.subject-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--spacing-4);
+}
+
+.subject-card {
+  padding: var(--spacing-4);
+  border-radius: var(--radius-xl);
+  display: flex;
+  flex-direction: column;
+  transition: all 0.3s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+.subject-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 4px;
+}
+
+.subject-physics::before { background-color: var(--color-physics-red); }
+.subject-chemistry::before { background-color: var(--color-chemistry-orange); }
+.subject-math::before { background-color: var(--color-math-teal); }
+
+.subject-card:hover {
+  transform: translateY(-5px);
+  box-shadow: var(--shadow-lg);
+}
+
+.subject-card-top {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-3);
+  margin-bottom: var(--spacing-3);
+}
+
+.subject-icon-wrapper {
+  width: 60px;
+  height: 60px;
+  border-radius: var(--radius-lg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.subject-card h3 {
+  font-size: 22px;
+  margin: 0;
+}
+
+.subject-card p {
+  font-size: 15px;
+  margin-bottom: var(--spacing-4);
+  flex-grow: 1;
+  color: var(--text-secondary);
+}
+
+.subject-progress {
+  margin-bottom: var(--spacing-4);
+}
+
+.progress-bar {
+  height: 6px;
+  background-color: var(--border-color);
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: var(--radius-pill);
+  background-color: var(--color-dashboard-blue);
+  transition: width 0.5s ease;
+}
+
+.subject-physics .progress-fill { background-color: var(--color-physics-red); }
+.subject-chemistry .progress-fill { background-color: var(--color-chemistry-orange); }
+.subject-math .progress-fill { background-color: var(--color-math-teal); }
+
+.progress-text {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.subject-actions {
+  display: flex;
+  width: 100%;
+}
+
+/* Buttons */
+.btn {
+  padding: 12px 20px;
+  border-radius: var(--radius-pill);
+  font-size: 15px;
+  font-weight: 600;
+  transition: all 0.2s ease;
+}
+
+.btn-primary {
+  background-color: var(--color-dashboard-blue);
+  color: white;
+}
+
+.btn-primary:hover {
+  background-color: var(--color-dashboard-blue-hover);
+  transform: translateY(-1px);
+}
+
+.w-100 {
+  width: 100%;
+  text-align: center;
+}
+
+/* Theme Colors for Subjects */
+.subject-physics .subject-icon-wrapper {
+  background-color: rgba(244, 63, 94, 0.1);
+  color: var(--color-physics-red);
+}
+
+.subject-physics .btn-primary {
+  background-color: var(--color-physics-red);
+}
+.subject-physics .btn-primary:hover {
+  background-color: #e11d48;
+}
+
+.subject-chemistry .subject-icon-wrapper {
+  background-color: rgba(245, 158, 11, 0.1);
+  color: var(--color-chemistry-orange);
+}
+.subject-chemistry .btn-primary {
+  background-color: var(--color-chemistry-orange);
+}
+.subject-chemistry .btn-primary:hover {
+  background-color: #d97706;
+}
+
+.subject-math .subject-icon-wrapper {
+  background-color: rgba(14, 165, 233, 0.1);
+  color: var(--color-math-teal);
+}
+.subject-math .btn-primary {
+  background-color: var(--color-math-teal);
+}
+.subject-math .btn-primary:hover {
+  background-color: #0284c7;
+}

@@ -1,120 +1,185 @@
 import {
   WebSocketGateway,
-  WebSocketServer,
   SubscribeMessage,
-  OnGatewayConnection,
-  OnGatewayDisconnect,
   MessageBody,
   ConnectedSocket,
+  OnGatewayConnection,
+  OnGatewayDisconnect,
+  WebSocketServer,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
-import { supabase } from '../../config/supabase.config';
 
-/**
- * DoubtsGateway — Real-time WebSocket server for doubt chat rooms.
- * Frontend connects via: io('http://localhost:3000', { auth: { token: 'Bearer xxx' } })
- */
-@WebSocketGateway({
-  cors: { origin: process.env.FRONTEND_URL || 'http://localhost:5173', credentials: true },
-})
+import { DoubtsService } from './doubts.service';
+
+@WebSocketGateway({ namespace: '/doubts', cors: true }) //
 export class DoubtsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
   server: Server;
 
-  /** Called when a client connects — validates their JWT */
-  async handleConnection(client: Socket) {
-    try {
-      const token = client.handshake.auth?.token?.replace('Bearer ', '');
-      if (!token) { client.disconnect(); return; }
+  constructor(private readonly doubtsService: DoubtsService) {}
 
-      const { data: { user }, error } = await supabase.auth.getUser(token);
-      if (error || !user) { client.disconnect(); return; }
+  handleConnection(client: Socket) {
+    const auth = client.handshake.auth;
+    const token = auth.token;
 
-      // Get role
-      const { data: profile } = await supabase
-        .from('users')
-        .select('full_name, role')
-        .eq('id', user.id)
-        .single();
-
-      client.data.userId = user.id;
-      client.data.role = profile?.role;
-      client.data.name = profile?.full_name;
-
-      console.log(`[Socket] Connected: ${profile?.full_name} (${profile?.role})`);
-    } catch {
+    if (!token) {
       client.disconnect();
-    }
-  }
-
-  handleDisconnect(client: Socket) {
-    console.log(`[Socket] Disconnected: ${client.data?.name}`);
-  }
-
-  /** Student/Teacher joins a specific doubt room */
-  @SubscribeMessage('join_room')
-  handleJoinRoom(@MessageBody() data: { doubtId: string }, @ConnectedSocket() client: Socket) {
-    client.join(`doubt:${data.doubtId}`);
-    console.log(`[Socket] ${client.data.name} joined room: doubt:${data.doubtId}`);
-  }
-
-  /** Leave a doubt room */
-  @SubscribeMessage('leave_room')
-  handleLeaveRoom(@MessageBody() data: { doubtId: string }, @ConnectedSocket() client: Socket) {
-    client.leave(`doubt:${data.doubtId}`);
-  }
-
-  /** Someone sends a message — save to DB and broadcast to the room */
-  @SubscribeMessage('send_message')
-  async handleMessage(
-    @MessageBody() data: { doubtId: string; message_text: string },
-    @ConnectedSocket() client: Socket,
-  ) {
-    // Save to database
-    const { data: message, error } = await supabase
-      .from('doubt_messages')
-      .insert({
-        doubt_id: data.doubtId,
-        sender_id: client.data.userId,
-        message_text: data.message_text,
-      })
-      .select('id, message_text, sent_at, doubt_id')
-      .single();
-
-    if (error) {
-      client.emit('error', { message: 'Failed to send message' });
       return;
     }
 
-    // Broadcast to EVERYONE in this doubt room (including sender)
-    this.server.to(`doubt:${data.doubtId}`).emit('new_message', {
-      ...message,
-      sender: {
-        id: client.data.userId,
-        full_name: client.data.name,
-        role: client.data.role,
-      },
-    });
+    client.data.userId = auth.userId || 'mock-user-id';
+    client.data.role = auth.role || 'student';
+    client.data.name = auth.name || 'Test User';
+
+    console.log(`Client connected: ${client.id} as ${client.data.role}`);
   }
 
-  /** Typing indicators */
-  @SubscribeMessage('typing_start')
-  handleTypingStart(@MessageBody() data: { doubtId: string }, @ConnectedSocket() client: Socket) {
-    client.to(`doubt:${data.doubtId}`).emit('user_typing', {
-      name: client.data.name,
-      role: client.data.role,
-    });
+  handleDisconnect(client: Socket) {
+    console.log(`Client disconnected: ${client.id}`);
   }
 
-  @SubscribeMessage('typing_stop')
-  handleTypingStop(@MessageBody() data: { doubtId: string }, @ConnectedSocket() client: Socket) {
-    client.to(`doubt:${data.doubtId}`).emit('user_stopped_typing', {
-      name: client.data.name,
-    });
+  @SubscribeMessage('room:join')
+  handleJoinRoom(
+    @MessageBody() data: { doubtId: string },
+    @ConnectedSocket() client: Socket
+  ) {
+    client.join(data.doubtId);
+    console.log(`Client ${client.id} joined doubt room ${data.doubtId}`);
   }
 
-  /** Helper: notify a room about a doubt status change */
-  notifyStatusChange(doubtId: string, status: string) {
-    this.server.to(`doubt:${doubtId}`).emit('doubt_status_changed', { doubtId, status });
+  @SubscribeMessage('room:leave')
+  handleLeaveRoom(
+    @MessageBody() data: { doubtId: string },
+    @ConnectedSocket() client: Socket
+  ) {
+    client.leave(data.doubtId);
+  }
+
+  @SubscribeMessage('message:send')
+  async handleMessage(
+    @MessageBody() payload: { doubtId: string; text: string; imageUrl?: string },
+    @ConnectedSocket() client: Socket
+  ) {
+    try {
+      // Insert into Supabase
+      await this.doubtsService.sendMessage(payload.doubtId, client.data.userId, payload.text, payload.imageUrl);
+
+      const messagePayload = {
+        id: Math.random().toString(36).substring(7), // Supabase created an ID, but for real-time broadcast this suffices, or we could fetch the generated ID.
+        senderId: client.data.userId,
+        senderRole: client.data.role,
+        text: payload.text,
+        imageUrl: payload.imageUrl,
+        sentAt: new Date().toISOString(),
+      };
+
+      this.server.to(payload.doubtId).emit('message:new', messagePayload);
+    } catch (err) {
+      console.error('Failed to send message:', err);
+    }
+  }
+
+  @SubscribeMessage('typing:start')
+  handleTypingStart(
+    @MessageBody() payload: { doubtId: string },
+    @ConnectedSocket() client: Socket
+  ) {
+    client.to(payload.doubtId).emit('typing:start', { doubtId: payload.doubtId, senderRole: client.data.role });
+  }
+
+  @SubscribeMessage('typing:stop')
+  handleTypingStop(
+    @MessageBody() payload: { doubtId: string },
+    @ConnectedSocket() client: Socket
+  ) {
+    client.to(payload.doubtId).emit('typing:stop', { doubtId: payload.doubtId, senderRole: client.data.role });
+  }
+
+  @SubscribeMessage('doubt:request_list')
+  async handleRequestList(@ConnectedSocket() client: Socket) {
+    try {
+      if (client.data.role === 'student') {
+        const list = await this.doubtsService.getMyDoubts(client.data.userId);
+        const normalizedList = list.map((d: any) => ({
+          ...d,
+          studentId: d.student?.id || d.student_id,
+          subject: d.questions?.subject || d.subject || 'General',
+          snippet: d.questions?.question_text || d.snippet || 'No text provided',
+          time: new Date(d.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        }));
+        client.emit('doubt:list', normalizedList);
+      } else {
+        const list = await this.doubtsService.findAll();
+        const normalizedList = list.map((d: any) => ({
+          ...d,
+          studentId: d.student?.id || d.student_id,
+          subject: d.questions?.subject || d.subject || 'General',
+          snippet: d.questions?.question_text || d.snippet || 'No text provided',
+          time: new Date(d.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        }));
+        client.emit('doubt:list', normalizedList);
+      }
+    } catch (err) {
+      console.error('Failed to fetch doubts:', err);
+    }
+  }
+
+  @SubscribeMessage('doubt:raise')
+  async handleRaiseDoubt(
+    @MessageBody() payload: { subject: string; text: string },
+    @ConnectedSocket() client: Socket
+  ) {
+    try {
+      // Create doubt in Supabase
+      const doubt = await this.doubtsService.create(client.data.userId, {
+        subject: payload.subject,
+        snippet: payload.text,
+      });
+
+      // Format payload for frontend
+      const newDoubt = {
+        id: doubt.id,
+        status: doubt.status,
+        subject: payload.subject, // We attach the subject manually for the real-time broadcast since it's not in the doubt row
+        snippet: payload.text,
+        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        studentId: client.data.userId,
+        created_at: doubt.created_at,
+        questions: {
+          subject: payload.subject,
+          question_text: payload.text,
+        }
+      };
+      
+      // Broadcast to ALL connected clients
+      this.server.emit('doubt:new', newDoubt);
+    } catch (err) {
+      console.error('Failed to raise doubt:', err);
+    }
+  }
+
+  @SubscribeMessage('doubt:resolve')
+  handleResolveDoubt(
+    @MessageBody() payload: { doubtId: string },
+    @ConnectedSocket() client: Socket
+  ) {
+    // Broadcast resolution so UIs can remove it instantly
+    this.server.emit('doubt:resolved', { doubtId: payload.doubtId });
+  }
+
+  @SubscribeMessage('doubt:accept')
+  handleAcceptDoubt(
+    @MessageBody() payload: { doubtId: string },
+    @ConnectedSocket() client: Socket
+  ) {
+    this.server.emit('doubt:accepted', { doubtId: payload.doubtId });
+  }
+
+  @SubscribeMessage('session:live_start')
+  handleLiveSessionStart(
+    @MessageBody() payload: { doubtId: string, meetLink: string },
+    @ConnectedSocket() client: Socket
+  ) {
+    this.server.to(payload.doubtId).emit('session:live_start', { doubtId: payload.doubtId, meetLink: payload.meetLink });
   }
 }

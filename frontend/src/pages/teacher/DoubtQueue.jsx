@@ -1,7 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { io } from 'socket.io-client';
 import { MessageSquare, Clock, Filter, Search } from 'lucide-react';
 import { useAppData } from '../../context/AppDataContext';
+import { apiClient } from '../../api/client';
 import './DoubtQueue.css';
 
 const DoubtQueue = () => {
@@ -9,19 +11,68 @@ const DoubtQueue = () => {
   const { doubts, setDoubts, students } = useAppData();
   const [searchTerm, setSearchTerm] = useState('');
   const [activeFilter, setActiveFilter] = useState('All');
+  const [socket, setSocket] = useState(null);
+
+  useEffect(() => {
+    const token = localStorage.getItem('access_token');
+    let user = { id: '', role: 'teacher', full_name: 'Teacher' };
+    try {
+      const userStr = localStorage.getItem('user');
+      if (userStr) user = JSON.parse(userStr);
+    } catch (e) {}
+
+    const newSocket = io('http://localhost:3000/doubts', {
+      auth: { 
+        token: token,
+        userId: user.id,
+        role: user.role,
+        name: user.full_name || user.name
+      }
+    });
+
+    newSocket.on('doubt:list', (list) => {
+      setDoubts(list);
+    });
+
+    newSocket.on('doubt:new', (doubt) => {
+      setDoubts(prev => [doubt, ...prev]);
+    });
+
+    newSocket.on('doubt:resolved', ({ doubtId }) => {
+      setDoubts(prev => prev.map(d => d.id === doubtId ? { ...d, status: 'resolved' } : d));
+    });
+
+    newSocket.emit('doubt:request_list');
+    setSocket(newSocket);
+
+    return () => newSocket.close();
+  }, [setDoubts]);
 
   const filteredDoubts = doubts.filter(doubt => {
     const student = students.find(s => s.id === doubt.studentId);
-    const studentName = student ? student.name : 'Unknown Student';
+    const studentName = (student?.name || student?.full_name || 'Unknown Student');
+    const safeSnippet = doubt.snippet || 'No text provided';
+    const safeSubject = doubt.subject || 'General';
+
     const matchesSearch = studentName.toLowerCase().includes(searchTerm.toLowerCase()) || 
-                          doubt.snippet.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesFilter = activeFilter === 'All' || doubt.subject === activeFilter;
-    return matchesSearch && matchesFilter && doubt.status !== 'Resolved';
+                          safeSnippet.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesFilter = activeFilter === 'All' || safeSubject === activeFilter;
+    return matchesSearch && matchesFilter && doubt.status?.toLowerCase() !== 'resolved';
   });
 
-  const handleAccept = (id) => {
-    setDoubts(doubts.map(d => d.id === id ? { ...d, status: 'Connected' } : d));
-    navigate(`/teacher/doubt-chat/${id}`);
+  const handleAccept = async (id) => {
+    if (socket) {
+      try {
+        await apiClient.patch(`/doubts/${id}/accept`);
+        socket.emit('doubt:accept', { doubtId: id });
+        setDoubts(doubts.map(d => d.id === id ? { ...d, status: 'accepted' } : d));
+        navigate(`/teacher/doubt-chat/${id}`);
+      } catch (err) {
+        console.error('Failed to accept doubt', err);
+      }
+    } else {
+      navigate(`/teacher/doubt-chat/${id}`);
+    }
   };
 
   return (
@@ -66,23 +117,29 @@ const DoubtQueue = () => {
         ) : (
           filteredDoubts.map(doubt => {
             const student = students.find(s => s.id === doubt.studentId);
-            const studentName = student ? student.name : 'Unknown Student';
-            const avatar = student ? student.initials : 'U';
+            const studentName = (student?.name || student?.full_name || 'Unknown Student');
+            const avatar = student?.initials || studentName.charAt(0).toUpperCase() || 'U';
+            const safeSubject = doubt.subject || 'General';
+            const safeSnippet = doubt.snippet || 'No text provided';
+            
             return (
               <div key={doubt.id} className={`doubt-card ${doubt.status === 'Waiting' ? 'is-new' : ''}`}>
                 {doubt.status === 'Waiting' && <div className="new-badge">NEW</div>}
-                <div className="doubt-card-left">
+                
+                <div className="doubt-card-header">
                   <div className="student-avatar">{avatar}</div>
-                  <div className="doubt-info">
-                    <div className="doubt-meta">
-                      <span className="student-name">{studentName}</span>
-                      <span className={`subject-tag ${doubt.subject.toLowerCase()}`}>{doubt.subject}</span>
-                      <span className="time-tag"><Clock size={12} /> {doubt.time}</span>
-                    </div>
-                    <p className="question-snippet">"{doubt.snippet}"</p>
+                  <div className="header-info">
+                    <span className="student-name">{studentName}</span>
+                    <span className="time-tag"><Clock size={12} /> {doubt.time || 'Just now'}</span>
                   </div>
                 </div>
-                <div className="doubt-card-right">
+
+                <div className="doubt-card-body">
+                  <span className={`subject-tag ${safeSubject.toLowerCase()}`}>{safeSubject}</span>
+                  <p className="question-snippet">"{safeSnippet}"</p>
+                </div>
+
+                <div className="doubt-card-footer">
                   <button className="btn-accept" onClick={() => handleAccept(doubt.id)}>
                     {doubt.status === 'Connected' ? 'Resume Session' : 'Accept Doubt'}
                   </button>

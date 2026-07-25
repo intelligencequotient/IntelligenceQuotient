@@ -18,6 +18,10 @@ A full-stack application designed to streamline the assessment process for teach
   - **Question Bank**: A searchable, filterable data grid to view extracted questions, complete with a dedicated Answer column and a click-to-enlarge Image Lightbox.
   - **CSV/PDF Upload UI**: A dedicated interface for uploading exam files to trigger the backend processing pipeline.
 - **Resilient Data Fetching**: Frontend context providers optimized with `Promise.allSettled` to prevent single-endpoint failures from crashing the app.
+- **Real-Time Live Doubts System**: 
+  - **Student Portal**: Modal to raise custom doubts, real-time status tracking (Waiting, Connected, Resolved), and persistent live chat.
+  - **Teacher Portal**: Real-time queue to monitor incoming doubts, accept ownership, and launch live video sessions (via Jitsi links).
+  - **WebSocket Architecture**: Full Socket.io integration ensuring UI state (acceptances, resolutions, new messages) updates instantly across all connected clients without refreshing.
 
 ---
 

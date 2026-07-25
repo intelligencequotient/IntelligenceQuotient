@@ -4,14 +4,29 @@ import { supabase } from '../../config/supabase.config';
 @Injectable()
 export class DoubtsService {
   /** Submit a new doubt */
-  async create(studentId: string, body: { question_id?: string; attempt_id?: string; snippet?: string }) {
-    const { data, error } = await supabase
+  async create(studentId: string, body: { question_id?: string; attempt_id?: string; snippet?: string; subject?: string }) {
+    const { data: doubt, error } = await supabase
       .from('doubts')
-      .insert({ student_id: studentId, ...body, status: 'pending' })
+      .insert({ 
+        student_id: studentId,
+        question_id: body.question_id || null,
+        attempt_id: body.attempt_id || null,
+        status: 'pending' 
+      })
       .select()
       .single();
     if (error) throw new Error(error.message);
-    return data;
+
+    // If there is a text snippet, insert it as the first message since there is no snippet column
+    if (body.snippet) {
+      await supabase.from('doubt_messages').insert({
+        doubt_id: doubt.id,
+        sender_id: studentId,
+        message_text: body.snippet
+      });
+    }
+    
+    return doubt;
   }
 
   /** Student's own doubts history */
@@ -100,10 +115,11 @@ export class DoubtsService {
   }
 
   /** Send a message (REST fallback) */
-  async sendMessage(doubtId: string, senderId: string, messageText: string) {
+  async sendMessage(doubtId: string, senderId: string, messageText: string, imageUrl?: string) {
+    const finalMessageText = imageUrl ? `${messageText}|||IMG|||${imageUrl}` : messageText;
     const { data, error } = await supabase
       .from('doubt_messages')
-      .insert({ doubt_id: doubtId, sender_id: senderId, message_text: messageText })
+      .insert({ doubt_id: doubtId, sender_id: senderId, message_text: finalMessageText })
       .select()
       .single();
     if (error) throw new Error(error.message);

@@ -15,11 +15,16 @@ export class QuestionsService {
     search?: string;
     page?: number;
     limit?: number;
-  }) {
+  }, user?: any) {
     const page = filters.page || 1;
     const limit = filters.limit || 20;
     const from = (page - 1) * limit;
     const to = from + limit - 1;
+
+    // Enforce Subject-Based Access Control
+    if (user && user.role === 'teacher' && user.subject && user.subject !== 'All') {
+      filters.subject = user.subject;
+    }
 
     let query = supabase
       .from('questions')

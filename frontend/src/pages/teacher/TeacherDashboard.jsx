@@ -32,7 +32,7 @@ const TeacherDashboard = () => {
             <span className="kpi-value">4</span>
           </div>
         </div>
-        <div className="kpi-card" onClick={() => navigate('/teacher/test-constructor')}>
+        <div className="kpi-card" onClick={() => navigate('/teacher/test-library')}>
           <div className="kpi-icon-wrapper"><FileText size={24} /></div>
           <div className="kpi-details">
             <span className="kpi-label">Tests Published This Week</span>
@@ -58,10 +58,10 @@ const TeacherDashboard = () => {
       <section className="quick-actions">
         <h2>Quick Actions</h2>
         <div className="action-grid">
-          <Link to="/teacher/test-constructor" className="action-card">
-            <div className="action-icon"><PlusCircle size={32} /></div>
-            <h3>Create Test</h3>
-            <p>Design a new assessment from scratch using the test constructor.</p>
+          <Link to="/teacher/test-library" className="action-card">
+            <div className="action-icon"><FileText size={32} /></div>
+            <h3>Test Library</h3>
+            <p>View existing tests and collaborate on test creation.</p>
           </Link>
           <Link to="/teacher/csv-upload" className="action-card">
             <div className="action-icon"><Upload size={32} /></div>

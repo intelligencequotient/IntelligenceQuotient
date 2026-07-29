@@ -29,12 +29,34 @@ async function seed() {
       password: 'teacher123',
       full_name: 'Dr. Robert Chen',
       role: 'teacher',
+      subject: 'All',
     },
     {
       email: 'student@edu.com',
       password: 'student123',
       full_name: 'Alex Johnson',
       role: 'student',
+    },
+    {
+      email: 'physics_teacher@edu.com',
+      password: 'teacher123',
+      full_name: 'Dr. Alan Physics',
+      role: 'teacher',
+      subject: 'Physics',
+    },
+    {
+      email: 'chemistry_teacher@edu.com',
+      password: 'teacher123',
+      full_name: 'Dr. Marie Chem',
+      role: 'teacher',
+      subject: 'Chemistry',
+    },
+    {
+      email: 'maths_teacher@edu.com',
+      password: 'teacher123',
+      full_name: 'Dr. Euler Maths',
+      role: 'teacher',
+      subject: 'Mathematics',
     },
   ];
 
@@ -46,12 +68,14 @@ async function seed() {
       email: u.email,
       password: u.password,
       email_confirm: true,
+      user_metadata: u.subject ? { subject: u.subject } : {},
     });
 
     let userId = authData?.user?.id;
 
     if (authError) {
-      if (authError.message.includes('already exists') || authError.message.includes('already registered')) {
+      const errMsg = authError.message || '';
+      if (errMsg.includes('already exists') || errMsg.includes('already registered') || errMsg.includes('already been registered')) {
         console.log(`⚠️ User ${u.email} already exists in auth. Fetching ID...`);
         // If they exist, let's find their ID
         const { data: existingUsers } = await supabase.auth.admin.listUsers();
@@ -59,9 +83,12 @@ async function seed() {
         if (existing) {
           userId = existing.id;
           
-          // Let's also reset their password just to be sure it matches the demo
-          await supabase.auth.admin.updateUserById(userId, { password: u.password });
-          console.log(`✅ Password reset for ${u.email}`);
+          // Let's also reset their password and metadata just to be sure it matches the demo
+          await supabase.auth.admin.updateUserById(userId, { 
+            password: u.password,
+            user_metadata: u.subject ? { subject: u.subject } : {} 
+          });
+          console.log(`✅ Password & metadata updated for ${u.email}`);
         }
       } else {
         console.error(`❌ Error creating ${u.email} in Auth:`, authError.message);

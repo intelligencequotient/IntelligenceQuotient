@@ -13,8 +13,15 @@ const LoginPage = () => {
   const [error, setError] = useState('');
 
   const MOCK_CREDENTIALS = {
-    student: { email: import.meta.env.VITE_DEMO_STUDENT_EMAIL || 'student@edu.com', password: import.meta.env.VITE_DEMO_STUDENT_PASSWORD || 'student123' },
-    teacher: { email: import.meta.env.VITE_DEMO_TEACHER_EMAIL || 'teacher@edu.com', password: import.meta.env.VITE_DEMO_TEACHER_PASSWORD || 'teacher123' },
+    student: [
+      { label: 'Alex Johnson', email: 'student@edu.com', password: 'student123' },
+    ],
+    teacher: [
+      { label: 'Dr. Robert Chen', email: 'teacher@edu.com', password: 'teacher123' },
+      { label: 'Dr. Alan Physics', email: 'physics_teacher@edu.com', password: 'teacher123' },
+      { label: 'Dr. Marie Chem', email: 'chemistry_teacher@edu.com', password: 'teacher123' },
+      { label: 'Dr. Euler Maths', email: 'maths_teacher@edu.com', password: 'teacher123' },
+    ],
   };
 
   const handleLogin = async (e) => {
@@ -32,7 +39,8 @@ const LoginPage = () => {
       localStorage.setItem('user', JSON.stringify(data.user));
       
       // Navigate based on actual role from database
-      navigate(data.user.role === 'teacher' || data.user.role === 'admin' ? '/teacher' : '/student');
+      // Force full reload so AppDataContext fetches initial data
+      window.location.href = (data.user.role === 'teacher' || data.user.role === 'admin' ? '/teacher' : '/student');
     } catch (err) {
       setError(err.message || 'Invalid email or password. Please try again.');
     } finally {
@@ -117,7 +125,7 @@ const LoginPage = () => {
               <label>Email Address</label>
               <input
                 type="email"
-                placeholder={`e.g. ${MOCK_CREDENTIALS[role].email}`}
+                placeholder={`e.g. ${MOCK_CREDENTIALS[role][0].email}`}
                 value={email}
                 onChange={e => setEmail(e.target.value)}
                 required
@@ -150,13 +158,17 @@ const LoginPage = () => {
           {/* Demo Credentials */}
           <div className="demo-creds">
             <p>Demo credentials for <strong>{role}</strong>:</p>
-            <code>{MOCK_CREDENTIALS[role].email} / {MOCK_CREDENTIALS[role].password}</code>
-            <button className="autofill-btn" onClick={() => {
-              setEmail(MOCK_CREDENTIALS[role].email);
-              setPassword(MOCK_CREDENTIALS[role].password);
-            }}>
-              Auto-fill
-            </button>
+            {MOCK_CREDENTIALS[role].map((cred, i) => (
+              <div key={i} className="demo-cred-row" style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'6px',flexWrap:'wrap'}}>
+                <code style={{flex:1,minWidth:0,fontSize:'0.8rem'}}>{cred.label} — {cred.email} / {cred.password}</code>
+                <button className="autofill-btn" onClick={() => {
+                  setEmail(cred.email);
+                  setPassword(cred.password);
+                }}>
+                  Auto-fill
+                </button>
+              </div>
+            ))}
           </div>
         </div>
       </div>

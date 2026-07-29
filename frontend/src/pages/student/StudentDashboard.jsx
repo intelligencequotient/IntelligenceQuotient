@@ -24,9 +24,6 @@ const StudentDashboard = () => {
         <div className="hero-content">
           <h1>Welcome back, Alex! 👋</h1>
           <p>You're on a 5-day streak. Your next major exam is approaching in 12 days. Let's make today count.</p>
-          <div className="hero-actions">
-            <Link to="/student/locked/test/1" className="btn-glow" style={{ textDecoration: 'none', display: 'inline-block' }}>Resume Mock Test</Link>
-          </div>
         </div>
         <div className="hero-decoration">
           <div className="circle circle-1"></div>
@@ -55,6 +52,43 @@ const StudentDashboard = () => {
             </div>
           );
         })}
+      </div>
+
+      {/* Practice Exams Grid */}
+      <div className="section-header mt-4 animate-slide-up" style={{ animationDelay: '0.25s' }}>
+        <h2>Practice Exams</h2>
+      </div>
+
+      <div className="subject-grid animate-slide-up" style={{ animationDelay: '0.28s' }}>
+        <div className="subject-card glass" style={{ borderTop: '4px solid var(--color-physics-red)' }}>
+          <div className="subject-card-top">
+            <div className="subject-icon-wrapper" style={{ color: 'var(--color-physics-red)', backgroundColor: 'rgba(244, 63, 94, 0.1)' }}>
+              <Target size={28} />
+            </div>
+            <h3>JEE Main</h3>
+          </div>
+          <p>Full syllabus mock test based on the latest NTA pattern.</p>
+          <div className="subject-actions" style={{ marginTop: '1.5rem' }}>
+            <a href="http://localhost:5175/exam/instructions/jee-main-preview" target="_blank" rel="noopener noreferrer" className="btn btn-primary w-100 text-center" style={{ backgroundColor: 'var(--color-physics-red)', borderColor: 'var(--color-physics-red)' }}>
+              Take Exam
+            </a>
+          </div>
+        </div>
+
+        <div className="subject-card glass" style={{ borderTop: '4px solid var(--color-dashboard-blue)' }}>
+          <div className="subject-card-top">
+            <div className="subject-icon-wrapper" style={{ color: 'var(--color-dashboard-blue)', backgroundColor: 'rgba(59, 130, 246, 0.1)' }}>
+              <Book size={28} />
+            </div>
+            <h3>JEE Advanced</h3>
+          </div>
+          <p>Paper 1 mock test with MSQ, NAT, and tricky MCQs.</p>
+          <div className="subject-actions" style={{ marginTop: '1.5rem' }}>
+            <a href="http://localhost:5175/exam/instructions/jee-adv-preview" target="_blank" rel="noopener noreferrer" className="btn btn-primary w-100 text-center">
+              Take Exam
+            </a>
+          </div>
+        </div>
       </div>
 
       {/* Subject Grid */}

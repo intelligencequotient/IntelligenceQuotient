@@ -8,7 +8,7 @@ const SubjectLanding = () => {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('Chapters');
 
-  const tabs = ['Chapters', 'Practice', 'Test', 'Analytics', 'Leaderboard'];
+  const tabs = ['Chapters', 'Practice', 'Analytics', 'Leaderboard'];
 
   const subjectData = {
     physics: {
@@ -56,7 +56,6 @@ const SubjectLanding = () => {
     setActiveTab(tab);
     if (tab === 'Analytics') navigate('/student/analytics');
     if (tab === 'Leaderboard') navigate('/student/leaderboard');
-    if (tab === 'Test') navigate('/student/locked/test/1');
   };
 
   return (

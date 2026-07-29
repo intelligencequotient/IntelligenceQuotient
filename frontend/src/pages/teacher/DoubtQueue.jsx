@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { MessageSquare, Clock, Filter, Search } from 'lucide-react';
+import { MessageSquare, Clock, Filter, Search, Trash2 } from 'lucide-react';
 import { useAppData } from '../../context/AppDataContext';
+import { apiClient } from '../../api/client';
 import './DoubtQueue.css';
 
 const DoubtQueue = () => {
@@ -9,20 +10,51 @@ const DoubtQueue = () => {
   const { doubts, setDoubts, students } = useAppData();
   const [searchTerm, setSearchTerm] = useState('');
   const [activeFilter, setActiveFilter] = useState('All');
+  const [queueError, setQueueError] = useState('');
+  
+  const user = JSON.parse(localStorage.getItem('user') || '{}');
+  const currentUserId = user?.id;
 
   const filteredDoubts = doubts.filter(doubt => {
-    const student = students.find(s => s.id === doubt.studentId);
-    const studentName = student ? student.name : 'Unknown Student';
+    const isPendingUnassigned = doubt.status === 'pending' && !doubt.accepted_by;
+    const isAssignedToMe = doubt.accepted_by === currentUserId || (doubt.status === 'accepted' && doubt.teacher?.id === currentUserId);
+    
+    if (!isPendingUnassigned && !isAssignedToMe) return false;
+    
+    const studentName = doubt.student?.full_name || 'Unknown Student';
+    const snippet = doubt.questions?.question_text || '';
+    const subject = doubt.questions?.subject || 'Unknown';
     const matchesSearch = studentName.toLowerCase().includes(searchTerm.toLowerCase()) || 
-                          doubt.snippet.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesFilter = activeFilter === 'All' || doubt.subject === activeFilter;
-    return matchesSearch && matchesFilter && doubt.status !== 'Resolved';
+                          snippet.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesFilter = activeFilter === 'All' || subject === activeFilter;
+    return matchesSearch && matchesFilter && doubt.status !== 'resolved';
   });
 
-  const handleAccept = (id) => {
-    setDoubts(doubts.map(d => d.id === id ? { ...d, status: 'Connected' } : d));
-    navigate(`/teacher/doubt-chat/${id}`);
+  const handleAccept = async (id) => {
+    setQueueError('');
+    try {
+      await apiClient.patch(`/doubts/${id}/accept`);
+      setDoubts(doubts.map(d => d.id === id ? { ...d, status: 'accepted' } : d));
+      navigate(`/teacher/doubt-chat/${id}`);
+    } catch (e) {
+      console.error('Failed to accept doubt', e);
+      // e.g. another teacher claimed it first
+      setQueueError(e.message || 'Could not open this doubt.');
+      setDoubts(doubts.filter(d => d.id !== id));
+    }
   };
+
+  const handleDelete = async (id) => {
+    try {
+      await apiClient.delete(`/doubts/${id}`);
+      setDoubts(doubts.filter(d => d.id !== id));
+    } catch (e) {
+      console.error('Failed to delete doubt', e);
+      setQueueError(e.message || 'Could not delete this doubt.');
+    }
+  };
+
+  const pendingCount = doubts.filter(d => (d.status === 'pending' && !d.accepted_by) || d.accepted_by === currentUserId).length;
 
   return (
     <div className="doubt-queue">
@@ -33,58 +65,54 @@ const DoubtQueue = () => {
         </div>
         <div className="queue-status">
           <span className="pulse-dot"></span>
-          <span>4 Doubts Pending</span>
+          <span>{pendingCount} Doubts Pending</span>
         </div>
       </header>
 
-      <div className="queue-controls">
-        <div className="search-bar">
-          <Search size={18} className="search-icon" />
-          <input 
-            type="text" 
-            placeholder="Search by student or keyword..." 
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-          />
+      {queueError && (
+        <div style={{ padding: '10px 14px', marginBottom: '12px', borderRadius: '8px', background: 'rgba(220,53,69,0.1)', color: '#dc3545' }}>
+          {queueError}
         </div>
-        <div className="filters">
-          {['All', 'Mathematics', 'Physics', 'Chemistry'].map(subject => (
-            <button 
-              key={subject}
-              className={`filter-btn ${activeFilter === subject ? 'active' : ''}`}
-              onClick={() => setActiveFilter(subject)}
-            >
-              {subject}
-            </button>
-          ))}
-        </div>
-      </div>
+      )}
+
+
 
       <div className="queue-list">
         {filteredDoubts.length === 0 ? (
           <div style={{padding: '40px', textAlign: 'center', color: 'var(--text-secondary)'}}>No active doubts in the queue.</div>
         ) : (
           filteredDoubts.map(doubt => {
-            const student = students.find(s => s.id === doubt.studentId);
-            const studentName = student ? student.name : 'Unknown Student';
-            const avatar = student ? student.initials : 'U';
+            const studentName = doubt.student?.full_name || 'Unknown Student';
+            const avatar = studentName.charAt(0).toUpperCase();
+            const subject = doubt.questions?.subject || 'Unknown';
+            const snippet = doubt.questions?.question_text || '';
+            const timeStr = new Date(doubt.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
             return (
-              <div key={doubt.id} className={`doubt-card ${doubt.status === 'Waiting' ? 'is-new' : ''}`}>
-                {doubt.status === 'Waiting' && <div className="new-badge">NEW</div>}
+              <div key={doubt.id} className={`doubt-card ${doubt.status === 'pending' ? 'is-new' : ''}`}>
+                {doubt.status === 'pending' && <div className="new-badge">NEW</div>}
                 <div className="doubt-card-left">
                   <div className="student-avatar">{avatar}</div>
                   <div className="doubt-info">
                     <div className="doubt-meta">
                       <span className="student-name">{studentName}</span>
-                      <span className={`subject-tag ${doubt.subject.toLowerCase()}`}>{doubt.subject}</span>
-                      <span className="time-tag"><Clock size={12} /> {doubt.time}</span>
+                      <span className={`subject-tag ${subject.toLowerCase()}`}>{subject}</span>
+                      <span className="time-tag"><Clock size={12} /> {timeStr}</span>
                     </div>
-                    <p className="question-snippet">"{doubt.snippet}"</p>
+                    <p className="question-snippet">"{snippet.length > 100 ? snippet.substring(0, 100) + '...' : snippet}"</p>
                   </div>
                 </div>
-                <div className="doubt-card-right">
+                <div className="doubt-card-right" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <button className="btn-accept" onClick={() => handleAccept(doubt.id)}>
-                    {doubt.status === 'Connected' ? 'Resume Session' : 'Accept Doubt'}
+                    {doubt.status === 'accepted' ? 'Resume Session' : 'Accept Doubt'}
+                  </button>
+                  <button 
+                    className="delete-doubt-btn"
+                    style={{ background: 'none', border: 'none', color: 'var(--color-physics-red)', cursor: 'pointer', padding: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                    onClick={() => handleDelete(doubt.id)}
+                    title="Delete Session"
+                  >
+                    <Trash2 size={20} />
                   </button>
                 </div>
               </div>

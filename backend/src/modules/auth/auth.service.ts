@@ -41,6 +41,7 @@ export class AuthService {
         email: data.user.email,
         full_name: profile.full_name,
         role: profile.role,
+        subject: data.user.user_metadata?.subject || 'All',
       },
     };
   }
@@ -66,7 +67,7 @@ export class AuthService {
   /**
    * Me: Returns the full profile of the currently logged-in user.
    */
-  async getMe(userId: string) {
+  async getMe(userId: string, subject: string = 'All') {
     const { data, error } = await supabase
       .from('users')
       .select('id, full_name, email, role, created_at')
@@ -77,6 +78,6 @@ export class AuthService {
       throw new UnauthorizedException('Could not retrieve user profile.');
     }
 
-    return data;
+    return { ...data, subject };
   }
 }

@@ -25,7 +25,7 @@ const StudentCRM = () => {
   };
 
   const filteredStudents = useMemo(() => {
-    return students.filter(s => s.name.toLowerCase().includes(searchTerm.toLowerCase()));
+    return (students || []).filter(s => (s.full_name || s.name || '').toLowerCase().includes(searchTerm.toLowerCase()));
   }, [searchTerm, students]);
 
   const totalPages = Math.ceil(filteredStudents.length / PAGE_SIZE);
@@ -105,7 +105,16 @@ const StudentCRM = () => {
           </thead>
           <tbody>
             {paginatedStudents.map(student => {
-              const batchName = batches.find(b => b.id === student.batchId)?.name || 'Unassigned';
+              const sName = student.full_name || student.name || 'Unknown Student';
+              const initials = sName.split(' ').map(n => n[0]).join('').substring(0,2).toUpperCase();
+              const batchName = student.batch_students?.[0]?.batches?.name || batches.find(b => b.id === student.batchId)?.name || 'Unassigned';
+              const sStatus = student.status || 'Active';
+              const testsTaken = student.tests || 0;
+              const avgScore = student.score || 'N/A';
+              
+              // Safe mock for "last active"
+              const hashId = student.id ? student.id.charCodeAt(0) : 0;
+              
               return (
               <tr key={student.id} className={selectedIds.includes(student.id) ? 'selected-row' : ''} onClick={() => navigate(`/teacher/student/${student.id}`)} style={{cursor: 'pointer'}}>
                 <td onClick={(e) => e.stopPropagation()}>
@@ -118,15 +127,15 @@ const StudentCRM = () => {
                 </td>
                 <td>
                   <div className="student-name-cell">
-                    <div className="student-avatar">{student.initials}</div>
-                    <span className="s-name">{student.name}</span>
+                    <div className="student-avatar">{initials}</div>
+                    <span className="s-name">{sName}</span>
                   </div>
                 </td>
                 <td><span className="batch-badge">{batchName}</span></td>
-                <td>{['Just now', '5 mins ago', '1 hour ago', '2 hours ago', '1 day ago', '3 days ago', '1 week ago'][parseInt(student.id) % 7]}</td>
-                <td>{student.tests}</td>
-                <td>{student.score}</td>
-                <td><span className={`status-dot ${student.status.toLowerCase().replace(' ', '-')}`}></span> {student.status}</td>
+                <td>{['Just now', '5 mins ago', '1 hour ago', '2 hours ago', '1 day ago', '3 days ago', '1 week ago'][hashId % 7]}</td>
+                <td>{testsTaken}</td>
+                <td>{avgScore}</td>
+                <td><span className={`status-dot ${sStatus.toLowerCase().replace(' ', '-')}`}></span> {sStatus}</td>
                 <td onClick={(e) => e.stopPropagation()}>
                   <button className="icon-btn"><MoreVertical size={16}/></button>
                 </td>

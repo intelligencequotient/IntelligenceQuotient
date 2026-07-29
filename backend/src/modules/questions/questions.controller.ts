@@ -25,6 +25,7 @@ export class QuestionsController {
   @ApiOperation({ summary: 'List all questions with filters' })
   @Get()
   findAll(
+    @CurrentUser() user: any,
     @Query('subject') subject?: string,
     @Query('difficulty') difficulty?: string,
     @Query('q_type') q_type?: string,
@@ -33,7 +34,7 @@ export class QuestionsController {
     @Query('page') page?: number,
     @Query('limit') limit?: number,
   ) {
-    return this.questionsService.findAll({ subject, difficulty, q_type, topic, search, page, limit });
+    return this.questionsService.findAll({ subject, difficulty, q_type, topic, search, page, limit }, user);
   }
 
   @ApiOperation({ summary: 'Create one question manually' })

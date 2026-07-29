@@ -13,6 +13,7 @@ export const AppDataProvider = ({ children }) => {
   const [tests, setTests] = useState([]);
   const [batches, setBatches] = useState([]);
   const [students, setStudents] = useState([]);
+  const [teachers, setTeachers] = useState([]);
   const [doubts, setDoubts] = useState([]);
   const [testResults, setTestResults] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -39,7 +40,8 @@ export const AppDataProvider = ({ children }) => {
             apiClient.get('/tests'),
             apiClient.get('/batches'),
             apiClient.get('/users/students'),
-            apiClient.get('/doubts')
+            apiClient.get('/doubts'),
+            apiClient.get('/users/teachers')
           ]);
           
           setQuestions(results[0].status === 'fulfilled' ? (results[0].value.data || []) : []);
@@ -47,13 +49,16 @@ export const AppDataProvider = ({ children }) => {
           setBatches(results[2].status === 'fulfilled' ? (results[2].value || []) : []);
           setStudents(results[3].status === 'fulfilled' ? (results[3].value || []) : []);
           setDoubts(results[4].status === 'fulfilled' ? (results[4].value || []) : []);
+          setTeachers(results[5].status === 'fulfilled' ? (results[5].value || []) : []);
         } else if (user.role === 'student') {
-          const [tRes, dRes] = await Promise.all([
+          const results = await Promise.allSettled([
             apiClient.get('/tests/available'),
-            apiClient.get('/doubts/my')
+            apiClient.get('/doubts/my'),
+            apiClient.get('/users/teachers')
           ]);
-          setTests(tRes || []);
-          setDoubts(dRes || []);
+          setTests(results[0].status === 'fulfilled' ? (results[0].value || []) : []);
+          setDoubts(results[1].status === 'fulfilled' ? (results[1].value || []) : []);
+          setTeachers(results[2].status === 'fulfilled' ? (results[2].value || []) : []);
         }
       } catch (error) {
         console.error('Failed to fetch initial app data:', error);
@@ -65,15 +70,50 @@ export const AppDataProvider = ({ children }) => {
     fetchInitialData();
   }, []);
 
+  const refreshTests = async () => {
+    try {
+      const userStr = localStorage.getItem('user');
+      if (!userStr) return;
+      const user = JSON.parse(userStr);
+      if (user.role === 'teacher' || user.role === 'admin') {
+        const tests = await apiClient.get('/tests');
+        setTests(tests || []);
+      } else {
+        const tests = await apiClient.get('/tests/available');
+        setTests(tests || []);
+      }
+    } catch (e) {
+      console.error('Failed to refresh tests:', e);
+    }
+  };
+
+  const refreshDoubts = async () => {
+    try {
+      const userStr = localStorage.getItem('user');
+      if (!userStr) return;
+      const user = JSON.parse(userStr);
+      if (user.role === 'teacher' || user.role === 'admin') {
+        const doubts = await apiClient.get('/doubts');
+        setDoubts(doubts || []);
+      } else {
+        const doubts = await apiClient.get('/doubts/my');
+        setDoubts(doubts || []);
+      }
+    } catch (e) {
+      console.error('Failed to refresh doubts:', e);
+    }
+  };
+
   const value = useMemo(() => ({
     questions, setQuestions,
     tests, setTests,
     batches, setBatches,
     students, setStudents,
+    teachers, setTeachers,
     doubts, setDoubts,
     testResults, setTestResults,
-    loading
-  }), [questions, tests, batches, students, doubts, testResults, loading]);
+    loading, refreshTests, refreshDoubts
+  }), [questions, tests, batches, students, teachers, doubts, testResults, loading]);
 
   return (
     <AppDataContext.Provider value={value}>

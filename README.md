@@ -10,6 +10,27 @@ A full-stack application designed to streamline the assessment process for teach
 
 ---
 
+## 🚀 Quick Start (How to Run)
+
+You will need two separate terminal windows to run the full stack application.
+
+### 1. Start the Backend (NestJS)
+```bash
+cd backend
+npm install
+npm run start:dev
+```
+*Note: Ensure your `.env` file is present in the `backend` folder with your Supabase and Groq keys, and Python is installed with PyMuPDF and Groq packages.*
+
+### 2. Start the Frontend (React / Vite)
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+---
+
 ## ✅ Completed Features
 - **PDF Extraction Pipeline**: Fully functional Python script (`extract.py`) that uses PyMuPDF to intelligently parse questions, isolate diagram bounding boxes, and crop them perfectly while excluding trailing answers.
 - **AI Classification**: Integration with Groq's API (`classify.py`) to automatically categorize parsed questions by Subject and Topic using LLMs, with an automatic fallback to local keyword classification on rate limits.

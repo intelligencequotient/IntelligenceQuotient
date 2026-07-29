@@ -25,6 +25,12 @@ export class UsersController {
     return this.usersService.updateProfile(user.id, body);
   }
 
+  @ApiOperation({ summary: 'Change password' })
+  @Patch('profile/password')
+  updatePassword(@CurrentUser() user, @Body() body: { currentPassword?: string; newPassword: string }) {
+    return this.usersService.updatePassword(user.id, body);
+  }
+
   @ApiOperation({ summary: '[Teacher] List all students' })
   @UseGuards(RolesGuard)
   @Roles('teacher', 'admin')
@@ -42,5 +48,11 @@ export class UsersController {
   @Get('students/:id')
   getStudentProfile(@Param('id') id: string) {
     return this.usersService.getStudentProfile(id);
+  }
+
+  @ApiOperation({ summary: 'List all teachers' })
+  @Get('teachers')
+  listTeachers() {
+    return this.usersService.listTeachers();
   }
 }

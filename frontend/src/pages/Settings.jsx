@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { User, Bell, Shield, Palette } from 'lucide-react';
+import { apiClient } from '../api/client';
 import './Settings.css';
 
 const Settings = () => {
@@ -30,6 +31,37 @@ const Settings = () => {
   const showToast = (msg) => {
     setToast(msg);
     setTimeout(() => setToast(''), 3000);
+  };
+
+  const [passwords, setPasswords] = useState({
+    currentPassword: '',
+    newPassword: '',
+    confirmPassword: ''
+  });
+
+  const handlePasswordChange = (e) => {
+    setPasswords({ ...passwords, [e.target.name]: e.target.value });
+  };
+
+  const handleSavePassword = async () => {
+    if (passwords.newPassword !== passwords.confirmPassword) {
+      showToast('New passwords do not match!');
+      return;
+    }
+    if (!passwords.newPassword || passwords.newPassword.length < 6) {
+      showToast('Password must be at least 6 characters long.');
+      return;
+    }
+    try {
+      await apiClient.patch('/users/profile/password', {
+        currentPassword: passwords.currentPassword,
+        newPassword: passwords.newPassword
+      });
+      showToast('Password updated successfully!');
+      setPasswords({ currentPassword: '', newPassword: '', confirmPassword: '' });
+    } catch (err) {
+      showToast(err.message || 'Failed to update password');
+    }
   };
 
   const handleProfileChange = (e) => {
@@ -63,9 +95,6 @@ const Settings = () => {
           </div>
           <div className={`settings-tab ${activeTab === 'security' ? 'active' : ''}`} onClick={() => setActiveTab('security')}>
             <Shield size={18} /> Security
-          </div>
-          <div className={`settings-tab ${activeTab === 'appearance' ? 'active' : ''}`} onClick={() => setActiveTab('appearance')}>
-            <Palette size={18} /> Appearance
           </div>
         </div>
 
@@ -178,11 +207,31 @@ const Settings = () => {
             </>
           )}
 
-          {(activeTab === 'security' || activeTab === 'appearance') && (
-            <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text-secondary)' }}>
-              <h3>Coming Soon</h3>
-              <p>This section is under development.</p>
-            </div>
+          {activeTab === 'security' && (
+            <>
+              <div className="settings-section-title">Change Password</div>
+              
+              <div className="form-group">
+                <label className="form-label">Current Password</label>
+                <input type="password" className="form-control" name="currentPassword" value={passwords.currentPassword} onChange={handlePasswordChange} placeholder="Enter your current password" />
+              </div>
+
+              <div className="form-row">
+                <div className="form-group">
+                  <label className="form-label">New Password</label>
+                  <input type="password" className="form-control" name="newPassword" value={passwords.newPassword} onChange={handlePasswordChange} placeholder="New password" />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Confirm New Password</label>
+                  <input type="password" className="form-control" name="confirmPassword" value={passwords.confirmPassword} onChange={handlePasswordChange} placeholder="Confirm new password" />
+                </div>
+              </div>
+
+              <div className="settings-footer">
+                <button className="btn btn-outline-primary" onClick={() => setPasswords({ currentPassword: '', newPassword: '', confirmPassword: '' })}>Clear</button>
+                <button className="btn btn-primary" onClick={handleSavePassword}>Update Password</button>
+              </div>
+            </>
           )}
         </div>
       </div>

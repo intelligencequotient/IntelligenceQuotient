@@ -45,6 +45,6 @@ export class AuthController {
   @UseGuards(SupabaseAuthGuard)
   @Get('me')
   getMe(@CurrentUser() user) {
-    return this.authService.getMe(user.id);
+    return this.authService.getMe(user.id, user.subject);
   }
 }

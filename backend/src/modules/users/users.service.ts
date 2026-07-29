@@ -26,6 +26,29 @@ export class UsersService {
     return data;
   }
 
+  /** Update password */
+  async updatePassword(userId: string, body: { currentPassword?: string; newPassword: string }) {
+    const { data: user } = await supabase.from('users').select('email').eq('id', userId).single();
+    
+    // Verify current password first if provided
+    if (user?.email && body.currentPassword) {
+      const { error: signInError } = await supabase.auth.signInWithPassword({
+        email: user.email,
+        password: body.currentPassword,
+      });
+      if (signInError) {
+        throw new import('@nestjs/common').BadRequestException('Current password is incorrect');
+      }
+    }
+
+    // Update to new password using admin client
+    const { error } = await supabase.auth.admin.updateUserById(userId, {
+      password: body.newPassword,
+    });
+    if (error) throw new Error(error.message);
+    return { success: true, message: 'Password updated successfully' };
+  }
+
   /** List all students — for StudentCRM page */
   async listStudents(filters: { search?: string; batchId?: string }) {
     // Get all students with their batch info
@@ -80,5 +103,17 @@ export class UsersService {
       .limit(10);
 
     return { ...user, recentAttempts: attempts || [] };
+  }
+
+  /** List all teachers */
+  async listTeachers() {
+    const { data, error } = await supabase
+      .from('users')
+      .select('id, full_name, email, role, created_at')
+      .eq('role', 'teacher')
+      .order('full_name', { ascending: true });
+
+    if (error) throw new Error(error.message);
+    return data || [];
   }
 }

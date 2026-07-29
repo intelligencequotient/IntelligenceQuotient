@@ -24,7 +24,7 @@ const MainLayout = () => {
     { name: 'Mathematics', path: '/student/subject/math', icon: Calculator },
     { name: 'Analytics', path: '/student/analytics', icon: Layers },
     { name: 'Leaderboard', path: '/student/leaderboard', icon: Award },
-    { name: 'Doubts', path: '/student/doubts', icon: MessageSquare },
+    { name: 'Chat History', path: '/student/doubts', icon: MessageSquare },
   ];
 
   const teacherNav = [

@@ -15,6 +15,13 @@ export class TestsController {
 
   // ─── Teacher Routes ────────────────────────────────────────────────────────
 
+  @ApiOperation({ summary: '[Teacher] Create a full test (Metadata + Questions + Assignment)' })
+  @UseGuards(RolesGuard) @Roles('teacher', 'admin')
+  @Post('constructor')
+  saveFullTest(@Body() body: any, @CurrentUser() user) {
+    return this.testsService.saveFullTest(body, user);
+  }
+
   @ApiOperation({ summary: '[Teacher] List all tests' })
   @UseGuards(RolesGuard) @Roles('teacher', 'admin')
   @Get()
@@ -32,22 +39,22 @@ export class TestsController {
   @ApiOperation({ summary: '[Teacher] Publish a draft test' })
   @UseGuards(RolesGuard) @Roles('teacher', 'admin')
   @Patch(':id/publish')
-  publish(@Param('id') id: string) {
-    return this.testsService.publish(id);
+  publish(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.testsService.publish(id, user);
   }
 
   @ApiOperation({ summary: '[Teacher] Add/replace questions on a test' })
   @UseGuards(RolesGuard) @Roles('teacher', 'admin')
   @Post(':id/questions')
-  addQuestions(@Param('id') id: string, @Body() body: { question_ids: string[] }) {
-    return this.testsService.addQuestions(id, body.question_ids);
+  addQuestions(@Param('id') id: string, @Body() body: { question_ids: string[] }, @CurrentUser() user) {
+    return this.testsService.addQuestions(id, body.question_ids, user);
   }
 
   @ApiOperation({ summary: '[Teacher] Assign test to batches with schedule' })
   @UseGuards(RolesGuard) @Roles('teacher', 'admin')
   @Post(':id/assign')
-  assign(@Param('id') id: string, @Body() body: any) {
-    return this.testsService.assign(id, body);
+  assign(@Param('id') id: string, @Body() body: any, @CurrentUser() user: any) {
+    return this.testsService.assign(id, body, user);
   }
 
   @ApiOperation({ summary: '[Teacher] Get all student results for a test' })
@@ -60,15 +67,15 @@ export class TestsController {
   @ApiOperation({ summary: '[Teacher] Update test metadata' })
   @UseGuards(RolesGuard) @Roles('teacher', 'admin')
   @Patch(':id')
-  update(@Param('id') id: string, @Body() body: any) {
-    return this.testsService.update(id, body);
+  update(@Param('id') id: string, @Body() body: any, @CurrentUser() user: any) {
+    return this.testsService.update(id, body, user);
   }
 
   @ApiOperation({ summary: '[Teacher] Delete a test' })
   @UseGuards(RolesGuard) @Roles('teacher', 'admin')
   @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.testsService.remove(id);
+  remove(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.testsService.remove(id, user);
   }
 
   // ─── Student Routes ────────────────────────────────────────────────────────

@@ -53,7 +53,56 @@ export class UsersService {
       );
     }
 
-    return students;
+    if (!students.length) return students;
+
+    // Attach performance stats in two batch queries rather than N+1 per student
+    const ids = students.map((s: any) => s.id);
+
+    const [{ data: attempts }, { data: risks }] = await Promise.all([
+      supabase
+        .from('attempts')
+        .select('student_id, total_score, submitted_at, tests(total_marks)')
+        .in('student_id', ids)
+        .eq('status', 'submitted'),
+      supabase
+        .from('predictions')
+        .select('student_id')
+        .in('student_id', ids)
+        .eq('risk_flag', true),
+    ]);
+
+    const statsMap = new Map<
+      string,
+      { testsTaken: number; pctSum: number; lastActive: string | null }
+    >();
+
+    for (const a of attempts || []) {
+      const sid = (a as any).student_id;
+      if (!statsMap.has(sid)) statsMap.set(sid, { testsTaken: 0, pctSum: 0, lastActive: null });
+      const entry = statsMap.get(sid)!;
+
+      const max = Number((a as any).tests?.total_marks) || 0;
+      entry.pctSum += max > 0 ? (Number(a.total_score) || 0) / max * 100 : 0;
+      entry.testsTaken += 1;
+
+      const submitted = (a as any).submitted_at;
+      if (submitted && (!entry.lastActive || submitted > entry.lastActive)) {
+        entry.lastActive = submitted;
+      }
+    }
+
+    const atRisk = new Set((risks || []).map((r: any) => r.student_id));
+
+    return students.map((s: any) => {
+      const stats = statsMap.get(s.id);
+      return {
+        ...s,
+        testsTaken: stats?.testsTaken || 0,
+        avgPercentage: stats?.testsTaken ? Math.round(stats.pctSum / stats.testsTaken) : null,
+        lastActive: stats?.lastActive || null,
+        status: atRisk.has(s.id) ? 'At Risk' : 'Active',
+      };
+    });
   }
 
   /** Get one student's full profile — for StudentProfileDetail page */

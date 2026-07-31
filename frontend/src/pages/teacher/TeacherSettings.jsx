@@ -1,31 +1,27 @@
-import React, { useState } from 'react';
-import { User, Bell, Lock, Image as ImageIcon, SlidersHorizontal } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { SlidersHorizontal, Loader2 } from 'lucide-react';
+import { apiClient } from '../../api/client';
 import './TeacherSettings.css';
+
+const initialsOf = (name = '') =>
+  name.trim().split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase() || '').join('') || '?';
 
 const TeacherSettings = () => {
   const [activeTab, setActiveTab] = useState('account');
   const [toast, setToast] = useState('');
-  
-  // Profile state
-  const [profile, setProfile] = useState({
-    name: 'Dr. Robert Chen',
-    email: 'r.chen@educommand.edu',
-    department: 'Advanced Sciences'
-  });
 
-  // Prefs state
+  const [profile, setProfile] = useState(null);
+  const [fullName, setFullName] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  // Local-only until there's somewhere on the server to persist them
   const [prefs, setPrefs] = useState({
     newDoubtAlerts: true,
     dailyDigest: false,
     systemUpdates: true,
-    weeklyReport: true
-  });
-
-  // Password state
-  const [password, setPassword] = useState({
-    current: '',
-    newPass: '',
-    confirm: ''
+    weeklyReport: true,
   });
 
   const showToast = (msg) => {
@@ -33,26 +29,51 @@ const TeacherSettings = () => {
     setTimeout(() => setToast(''), 3000);
   };
 
-  const handleUpdateProfile = () => {
-    showToast('Profile updated successfully!');
-  };
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const me = await apiClient.get('/users/profile');
+        if (cancelled) return;
+        setProfile(me);
+        setFullName(me.full_name || '');
+      } catch (err) {
+        if (!cancelled) setError(err.message || 'Could not load your profile.');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
-  const handleUpdatePassword = () => {
-    if(password.newPass.length < 8) {
-      showToast("Password must be at least 8 characters long.");
+  const handleUpdateProfile = async () => {
+    if (!fullName.trim()) {
+      showToast('Name cannot be empty.');
       return;
     }
-    if(password.newPass !== password.confirm) {
-      showToast("Passwords do not match.");
-      return;
+    setSaving(true);
+    try {
+      const updated = await apiClient.patch('/users/profile', { full_name: fullName.trim() });
+      setProfile(updated);
+
+      try {
+        const cached = JSON.parse(localStorage.getItem('user') || '{}');
+        localStorage.setItem('user', JSON.stringify({ ...cached, full_name: fullName.trim() }));
+        window.dispatchEvent(new Event('storage'));
+      } catch {
+        /* best effort */
+      }
+
+      showToast('Profile updated successfully!');
+    } catch (err) {
+      showToast(err.message || 'Failed to update profile.');
+    } finally {
+      setSaving(false);
     }
-    showToast('Password updated successfully!');
-    setPassword({current: '', newPass: '', confirm: ''});
   };
 
   const handlePrefChange = (key) => {
-    setPrefs(prev => ({ ...prev, [key]: !prev[key] }));
-    showToast('Preferences updated.');
+    setPrefs((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
   return (
@@ -63,24 +84,16 @@ const TeacherSettings = () => {
       </header>
 
       {toast && <div className="toast-notification">{toast}</div>}
+      {error && <div className="error-alert" style={{ color: '#dc2626', margin: '12px 0' }}>{error}</div>}
 
       <div className="settings-tabs">
-        <button 
-          className={`tab-btn ${activeTab === 'account' ? 'active' : ''}`}
-          onClick={() => setActiveTab('account')}
-        >
+        <button className={`tab-btn ${activeTab === 'account' ? 'active' : ''}`} onClick={() => setActiveTab('account')}>
           Account
         </button>
-        <button 
-          className={`tab-btn ${activeTab === 'notifications' ? 'active' : ''}`}
-          onClick={() => setActiveTab('notifications')}
-        >
+        <button className={`tab-btn ${activeTab === 'notifications' ? 'active' : ''}`} onClick={() => setActiveTab('notifications')}>
           Notifications
         </button>
-        <button 
-          className={`tab-btn ${activeTab === 'password' ? 'active' : ''}`}
-          onClick={() => setActiveTab('password')}
-        >
+        <button className={`tab-btn ${activeTab === 'password' ? 'active' : ''}`} onClick={() => setActiveTab('password')}>
           Password
         </button>
       </div>
@@ -90,35 +103,64 @@ const TeacherSettings = () => {
           <div className="settings-panel account-panel fade-in">
             <div className="panel-main">
               <h2>Profile Information</h2>
-              <div className="profile-edit-grid">
-                <div className="avatar-section">
-                  <div className="avatar-preview">
-                    <img src="https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=150&h=150&fit=crop" alt="Profile" />
+
+              {loading ? (
+                <p style={{ color: 'var(--text-secondary)' }}>
+                  <Loader2 size={16} style={{ verticalAlign: 'middle', marginRight: '6px' }} />
+                  Loading profile…
+                </p>
+              ) : (
+                <>
+                  <div className="profile-edit-grid">
+                    <div className="avatar-section">
+                      <div
+                        className="avatar-preview"
+                        style={{
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          fontSize: '2rem', fontWeight: 700, background: '#e2e8f0', color: '#475569',
+                        }}
+                      >
+                        {initialsOf(fullName)}
+                      </div>
+                    </div>
+
+                    <div className="form-fields">
+                      <div className="form-group">
+                        <label>Full Name</label>
+                        <input
+                          type="text"
+                          value={fullName}
+                          onChange={(e) => setFullName(e.target.value)}
+                        />
+                      </div>
+                      <div className="form-group">
+                        <label>Email Address</label>
+                        <input type="email" value={profile?.email || ''} disabled readOnly />
+                        <span className="field-hint">
+                          Email is managed by your account provider and can't be changed here.
+                        </span>
+                      </div>
+                      <div className="form-group">
+                        <label>Role</label>
+                        <input type="text" value={profile?.role || ''} disabled readOnly />
+                      </div>
+                    </div>
                   </div>
-                  <p className="avatar-hint">JPG, GIF or PNG. Max size of 800K</p>
-                </div>
-                
-                <div className="form-fields">
-                  <div className="form-group">
-                    <label>Full Name</label>
-                    <input type="text" value={profile.name} onChange={e => setProfile({...profile, name: e.target.value})} />
+
+                  <div className="panel-footer">
+                    <button
+                      className="btn-outline"
+                      onClick={() => setFullName(profile?.full_name || '')}
+                      disabled={saving}
+                    >
+                      Cancel
+                    </button>
+                    <button className="btn-primary" onClick={handleUpdateProfile} disabled={saving}>
+                      {saving ? 'Saving…' : 'Update Profile'}
+                    </button>
                   </div>
-                  <div className="form-group">
-                    <label>Email Address</label>
-                    <input type="email" value={profile.email} onChange={e => setProfile({...profile, email: e.target.value})} />
-                  </div>
-                  <div className="form-group">
-                    <label>Department</label>
-                    <input type="text" value={profile.department} onChange={e => setProfile({...profile, department: e.target.value})} />
-                    <span className="field-hint">Department changes require admin approval.</span>
-                  </div>
-                </div>
-              </div>
-              
-              <div className="panel-footer">
-                <button className="btn-outline">Cancel</button>
-                <button className="btn-primary" onClick={handleUpdateProfile}>Update Profile</button>
-              </div>
+                </>
+              )}
             </div>
 
             <div className="quick-preferences">
@@ -127,38 +169,26 @@ const TeacherSettings = () => {
                 <SlidersHorizontal size={18} />
               </div>
               <div className="pref-list">
-                <div className="pref-item">
-                  <div className="pref-info">
-                    <h4>New Doubt Alerts</h4>
-                    <p>Instant push notifications</p>
+                {[
+                  ['newDoubtAlerts', 'New Doubt Alerts', 'Instant push notifications'],
+                  ['dailyDigest', 'Daily Digest', 'Batch performance summary'],
+                  ['systemUpdates', 'System Updates', 'Maintenance & new features'],
+                ].map(([key, title, desc]) => (
+                  <div className="pref-item" key={key}>
+                    <div className="pref-info">
+                      <h4>{title}</h4>
+                      <p>{desc}</p>
+                    </div>
+                    <label className="switch">
+                      <input type="checkbox" checked={prefs[key]} onChange={() => handlePrefChange(key)} />
+                      <span className="slider round"></span>
+                    </label>
                   </div>
-                  <label className="switch">
-                    <input type="checkbox" checked={prefs.newDoubtAlerts} onChange={() => handlePrefChange('newDoubtAlerts')} />
-                    <span className="slider round"></span>
-                  </label>
-                </div>
-                <div className="pref-item">
-                  <div className="pref-info">
-                    <h4>Daily Digest</h4>
-                    <p>Batch performance summary</p>
-                  </div>
-                  <label className="switch">
-                    <input type="checkbox" checked={prefs.dailyDigest} onChange={() => handlePrefChange('dailyDigest')} />
-                    <span className="slider round"></span>
-                  </label>
-                </div>
-                <div className="pref-item">
-                  <div className="pref-info">
-                    <h4>System Updates</h4>
-                    <p>Maintenance & new features</p>
-                  </div>
-                  <label className="switch">
-                    <input type="checkbox" checked={prefs.systemUpdates} onChange={() => handlePrefChange('systemUpdates')} />
-                    <span className="slider round"></span>
-                  </label>
-                </div>
+                ))}
               </div>
-              <button className="btn-link" onClick={() => setActiveTab('notifications')}>Manage all notifications</button>
+              <button className="btn-link" onClick={() => setActiveTab('notifications')}>
+                Manage all notifications
+              </button>
             </div>
           </div>
         )}
@@ -166,37 +196,26 @@ const TeacherSettings = () => {
         {activeTab === 'notifications' && (
           <div className="settings-panel fade-in">
             <h2>Notification Preferences</h2>
+            <p style={{ color: 'var(--text-secondary)', marginBottom: '16px' }}>
+              These apply to this browser only — server-side delivery isn't wired up yet.
+            </p>
             <div className="pref-list large">
-              <div className="pref-item">
-                <div className="pref-info">
-                  <h4>New Doubt Alerts</h4>
-                  <p>Get notified immediately when a student asks a question in your batch.</p>
+              {[
+                ['newDoubtAlerts', 'New Doubt Alerts', 'Get notified immediately when a student asks a question in your batch.'],
+                ['dailyDigest', 'Daily Batch Performance Digest', "Receive a morning email summarizing the previous day's cohort activity."],
+                ['weeklyReport', 'Weekly Cohort Report', 'Comprehensive weekly analytics report for all assigned batches.'],
+              ].map(([key, title, desc]) => (
+                <div className="pref-item" key={key}>
+                  <div className="pref-info">
+                    <h4>{title}</h4>
+                    <p>{desc}</p>
+                  </div>
+                  <label className="switch">
+                    <input type="checkbox" checked={prefs[key]} onChange={() => handlePrefChange(key)} />
+                    <span className="slider round"></span>
+                  </label>
                 </div>
-                <label className="switch">
-                  <input type="checkbox" checked={prefs.newDoubtAlerts} onChange={() => handlePrefChange('newDoubtAlerts')} />
-                  <span className="slider round"></span>
-                </label>
-              </div>
-              <div className="pref-item">
-                <div className="pref-info">
-                  <h4>Daily Batch Performance Digest</h4>
-                  <p>Receive a morning email summarizing the previous day's cohort activity.</p>
-                </div>
-                <label className="switch">
-                  <input type="checkbox" checked={prefs.dailyDigest} onChange={() => handlePrefChange('dailyDigest')} />
-                  <span className="slider round"></span>
-                </label>
-              </div>
-              <div className="pref-item">
-                <div className="pref-info">
-                  <h4>Weekly Cohort Report</h4>
-                  <p>Comprehensive weekly analytics report for all assigned batches.</p>
-                </div>
-                <label className="switch">
-                  <input type="checkbox" checked={prefs.weeklyReport} onChange={() => handlePrefChange('weeklyReport')} />
-                  <span className="slider round"></span>
-                </label>
-              </div>
+              ))}
             </div>
           </div>
         )}
@@ -204,21 +223,10 @@ const TeacherSettings = () => {
         {activeTab === 'password' && (
           <div className="settings-panel fade-in" style={{ maxWidth: '600px' }}>
             <h2>Change Password</h2>
-            <div className="form-group">
-              <label>Current Password</label>
-              <input type="password" value={password.current} onChange={e => setPassword({...password, current: e.target.value})} />
-            </div>
-            <div className="form-group">
-              <label>New Password</label>
-              <input type="password" value={password.newPass} onChange={e => setPassword({...password, newPass: e.target.value})} />
-            </div>
-            <div className="form-group">
-              <label>Confirm New Password</label>
-              <input type="password" value={password.confirm} onChange={e => setPassword({...password, confirm: e.target.value})} />
-            </div>
-            <div className="panel-footer">
-              <button className="btn-primary" onClick={handleUpdatePassword}>Update Password</button>
-            </div>
+            <p style={{ color: 'var(--text-secondary)' }}>
+              Password changes aren't available yet — this needs a backend endpoint that
+              re-authenticates the user against Supabase Auth before updating the credential.
+            </p>
           </div>
         )}
       </div>
@@ -227,4 +235,3 @@ const TeacherSettings = () => {
 };
 
 export default TeacherSettings;
-

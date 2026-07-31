@@ -4,6 +4,8 @@ import { supabase } from '../../config/supabase.config';
 const csvParser = require('csv-parser');
 import { Readable } from 'stream';
 
+const VALID_DIFFICULTIES = ['easy', 'medium', 'hard'];
+
 @Injectable()
 export class QuestionsService {
   /** List all active questions with optional filters */
@@ -44,7 +46,7 @@ export class QuestionsService {
   async create(body: any, teacherId: string) {
     const { data, error } = await supabase
       .from('questions')
-      .insert({ ...body, created_by: teacherId })
+      .insert({ is_active: true, ...body, created_by: teacherId })
       .select()
       .single();
     if (error) throw new Error(error.message);
@@ -114,21 +116,40 @@ export class QuestionsService {
       stream
         .pipe(csvParser())
         .on('data', (row) => {
-          // Expected CSV columns: question,optA,optB,optC,optD,correct,difficulty,subject,topic
-          const valid =
-            !!row.question && !!row.correct && !!row.difficulty && !!row.subject && !!row.topic;
+          // Expected CSV columns: question,optA,optB,optC,optD,correct,difficulty,subject,topic,marks
+          const options = [row.optA || '', row.optB || '', row.optC || '', row.optD || ''];
+          const correctIndex = ['A', 'B', 'C', 'D'].indexOf(
+            (row.correct || '').trim().toUpperCase(),
+          );
+          const difficulty = (row.difficulty || '').trim().toLowerCase();
+
+          // Collect every problem so the teacher sees exactly what to fix
+          const problems: string[] = [];
+          if (!row.question?.trim()) problems.push('missing question text');
+          if (!row.subject?.trim()) problems.push('missing subject');
+          if (!row.topic?.trim()) problems.push('missing topic');
+          if (correctIndex === -1) problems.push('correct answer must be A, B, C or D');
+          if (!VALID_DIFFICULTIES.includes(difficulty)) {
+            problems.push('difficulty must be easy, medium or hard');
+          }
+          if (correctIndex >= 0 && !options[correctIndex]?.trim()) {
+            problems.push(`option ${row.correct?.trim().toUpperCase()} is empty`);
+          }
+
+          const valid = problems.length === 0;
 
           results.push({
-            question_text: row.question || '',
-            options: [row.optA || '', row.optB || '', row.optC || '', row.optD || ''],
-            correct_answer: { index: ['A', 'B', 'C', 'D'].indexOf(row.correct?.toUpperCase()) },
-            difficulty: (row.difficulty || 'medium').toLowerCase(),
-            subject: row.subject || '',
-            topic: row.topic || '',
+            question_text: (row.question || '').trim(),
+            options,
+            correct_answer: { index: correctIndex },
+            difficulty: valid ? difficulty : difficulty || 'medium',
+            subject: (row.subject || '').trim(),
+            topic: (row.topic || '').trim(),
             q_type: 'single_correct',
             marks: parseFloat(row.marks) || 4,
+            is_active: true,
             valid,
-            errorMsg: !valid ? 'Missing required fields' : null,
+            errorMsg: valid ? null : problems.join('; '),
           });
         })
         .on('end', () => resolve(results))
@@ -136,11 +157,26 @@ export class QuestionsService {
     });
   }
 
-  /** Confirm CSV parse — bulk insert valid rows to DB */
+  /**
+   * Confirm CSV parse — bulk insert valid rows to DB.
+   * Fields are whitelisted rather than spread, so a tampered client payload
+   * can't inject arbitrary columns.
+   */
   async bulkInsert(rows: any[], teacherId: string) {
-    const validRows = rows
-      .filter((r) => r.valid)
-      .map(({ valid, errorMsg, ...rest }) => ({ ...rest, created_by: teacherId }));
+    const validRows = (rows || [])
+      .filter((r) => r?.valid && r?.question_text && r?.correct_answer?.index >= 0)
+      .map((r) => ({
+        question_text: r.question_text,
+        options: r.options,
+        correct_answer: r.correct_answer,
+        difficulty: VALID_DIFFICULTIES.includes(r.difficulty) ? r.difficulty : 'medium',
+        subject: r.subject,
+        topic: r.topic,
+        q_type: r.q_type || 'single_correct',
+        marks: Number(r.marks) || 4,
+        is_active: true,
+        created_by: teacherId,
+      }));
 
     if (!validRows.length) return { inserted: 0 };
 

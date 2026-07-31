@@ -10,6 +10,7 @@ import {
 import { Server, Socket } from 'socket.io';
 
 import { DoubtsService } from './doubts.service';
+import { supabase } from '../../config/supabase.config';
 
 @WebSocketGateway({ namespace: '/doubts', cors: true }) //
 export class DoubtsGateway implements OnGatewayConnection, OnGatewayDisconnect {
@@ -18,20 +19,56 @@ export class DoubtsGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   constructor(private readonly doubtsService: DoubtsService) {}
 
-  handleConnection(client: Socket) {
-    const auth = client.handshake.auth;
-    const token = auth.token;
+  /**
+   * Validates the Supabase JWT supplied in the handshake and derives the
+   * user's identity/role from the database.
+   *
+   * SECURITY: identity is NEVER taken from the client-supplied handshake
+   * payload — a client could otherwise claim any userId or role and
+   * impersonate another user over the socket.
+   */
+  async handleConnection(client: Socket) {
+    const token = client.handshake.auth?.token;
 
     if (!token) {
+      client.emit('auth:error', { message: 'Missing auth token' });
       client.disconnect();
       return;
     }
 
-    client.data.userId = auth.userId || 'mock-user-id';
-    client.data.role = auth.role || 'student';
-    client.data.name = auth.name || 'Test User';
+    try {
+      const {
+        data: { user },
+        error,
+      } = await supabase.auth.getUser(token);
 
-    console.log(`Client connected: ${client.id} as ${client.data.role}`);
+      if (error || !user) {
+        client.emit('auth:error', { message: 'Invalid or expired token' });
+        client.disconnect();
+        return;
+      }
+
+      const { data: profile, error: profileError } = await supabase
+        .from('users')
+        .select('full_name, role')
+        .eq('id', user.id)
+        .single();
+
+      if (profileError || !profile) {
+        client.emit('auth:error', { message: 'User profile not found' });
+        client.disconnect();
+        return;
+      }
+
+      client.data.userId = user.id;
+      client.data.role = profile.role;
+      client.data.name = profile.full_name;
+
+      console.log(`Client connected: ${client.id} as ${client.data.role}`);
+    } catch (err) {
+      console.error('Socket auth failed:', err);
+      client.disconnect();
+    }
   }
 
   handleDisconnect(client: Socket) {
@@ -163,6 +200,7 @@ export class DoubtsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody() payload: { doubtId: string },
     @ConnectedSocket() client: Socket
   ) {
+    if (!this.isTeacher(client)) return;
     // Broadcast resolution so UIs can remove it instantly
     this.server.emit('doubt:resolved', { doubtId: payload.doubtId });
   }
@@ -172,6 +210,7 @@ export class DoubtsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody() payload: { doubtId: string },
     @ConnectedSocket() client: Socket
   ) {
+    if (!this.isTeacher(client)) return;
     this.server.emit('doubt:accepted', { doubtId: payload.doubtId });
   }
 
@@ -180,6 +219,12 @@ export class DoubtsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @MessageBody() payload: { doubtId: string, meetLink: string },
     @ConnectedSocket() client: Socket
   ) {
+    if (!this.isTeacher(client)) return;
     this.server.to(payload.doubtId).emit('session:live_start', { doubtId: payload.doubtId, meetLink: payload.meetLink });
+  }
+
+  /** Only teachers/admins may accept, resolve, or start a live session. */
+  private isTeacher(client: Socket): boolean {
+    return client.data.role === 'teacher' || client.data.role === 'admin';
   }
 }

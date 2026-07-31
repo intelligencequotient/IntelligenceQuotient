@@ -64,16 +64,24 @@ export class TestsService {
 
   /** Add questions to test (Step 2 of TestConstructor) */
   async addQuestions(testId: string, questionIds: string[]) {
-    const rows = questionIds.map((qId, idx) => ({
-      test_id: testId,
-      question_id: qId,
-      question_order: idx + 1,
-    }));
+    const ids = questionIds || [];
 
-    // Delete old questions first, then re-insert
+    // Replace the whole set: clear first, then re-insert in order
     await supabase.from('test_questions').delete().eq('test_id', testId);
-    const { error } = await supabase.from('test_questions').insert(rows);
-    if (error) throw new Error(error.message);
+
+    if (ids.length) {
+      const rows = ids.map((qId, idx) => ({
+        test_id: testId,
+        question_id: qId,
+        question_order: idx + 1,
+      }));
+      const { error } = await supabase.from('test_questions').insert(rows);
+      if (error) throw new Error(error.message);
+    } else {
+      // No questions left on the test — zero out its marks and stop here
+      await supabase.from('tests').update({ total_marks: 0 }).eq('id', testId);
+      return { message: 'Questions updated', total_marks: 0 };
+    }
 
     // Recalculate total_marks
     const { data: questions } = await supabase
@@ -132,6 +140,9 @@ export class TestsService {
       throw new BadRequestException('No students found in the selected batches');
     }
 
+    // Re-assigning replaces the previous schedule rather than stacking duplicates
+    await supabase.from('test_assignments').delete().eq('test_id', testId);
+
     const { error } = await supabase.from('test_assignments').insert(assignments);
     if (error) throw new Error(error.message);
 
@@ -140,11 +151,14 @@ export class TestsService {
 
   /** Get tests available for a student (based on their assignment) */
   async getStudentTests(studentId: string) {
+    // NOTE: `!inner` is required — without it PostgREST returns the assignment
+    // row with a null `tests` object instead of filtering it out, which would
+    // leak unpublished tests into the student's list.
     const { data, error } = await supabase
       .from('test_assignments')
       .select(`
         id, scheduled_start, scheduled_end,
-        tests(id, title, description, t_type, duration_minutes, total_marks, status)
+        tests!inner(id, title, description, t_type, duration_minutes, total_marks, status)
       `)
       .eq('student_id', studentId)
       .eq('tests.status', 'published')

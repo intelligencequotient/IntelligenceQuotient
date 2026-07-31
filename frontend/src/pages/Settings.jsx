@@ -1,48 +1,73 @@
-import React, { useState } from 'react';
-import { User, Bell, Shield, Palette } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { User, Bell, Shield, Palette, Loader2 } from 'lucide-react';
+import { apiClient } from '../api/client';
 import './Settings.css';
 
 const Settings = () => {
-  const tokenString = localStorage.getItem('mock_token');
-  const initialUser = tokenString ? JSON.parse(tokenString) : { name: 'Alex Carter', email: 'alex.carter@example.com', role: 'student' };
-  
-  const [profile, setProfile] = useState({
-    firstName: initialUser.name?.split(' ')[0] || '',
-    lastName: initialUser.name?.split(' ')[1] || '',
-    email: initialUser.email || '',
-    phone: '+1 (555) 000-0000',
-    grade: '12'
-  });
-
   const [activeTab, setActiveTab] = useState('profile');
+  const [profile, setProfile] = useState(null);
+  const [fullName, setFullName] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [toast, setToast] = useState('');
+
+  // Notification prefs are local-only until the backend grows a place to store them
   const [notifications, setNotifications] = useState({
-    email: true,
-    sms: false,
-    app: true,
-    marketing: false
+    email: true, sms: false, app: true, marketing: false,
   });
 
-  const toggleNotification = (key) => {
-    setNotifications(prev => ({ ...prev, [key]: !prev[key] }));
-  };
-
-  const [toast, setToast] = useState('');
   const showToast = (msg) => {
     setToast(msg);
     setTimeout(() => setToast(''), 3000);
   };
 
-  const handleProfileChange = (e) => {
-    setProfile({ ...profile, [e.target.name]: e.target.value });
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const me = await apiClient.get('/users/profile');
+        if (cancelled) return;
+        setProfile(me);
+        setFullName(me.full_name || '');
+      } catch (err) {
+        if (!cancelled) setError(err.message || 'Could not load your profile.');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const handleSaveProfile = async () => {
+    if (!fullName.trim()) {
+      showToast('Name cannot be empty.');
+      return;
+    }
+    setSaving(true);
+    try {
+      const updated = await apiClient.patch('/users/profile', { full_name: fullName.trim() });
+      setProfile(updated);
+
+      // Keep the cached user in sync so the sidebar/header update too
+      try {
+        const cached = JSON.parse(localStorage.getItem('user') || '{}');
+        localStorage.setItem('user', JSON.stringify({ ...cached, full_name: fullName.trim() }));
+        window.dispatchEvent(new Event('storage'));
+      } catch {
+        /* cache refresh is best-effort */
+      }
+
+      showToast('Profile updated successfully!');
+    } catch (err) {
+      showToast(err.message || 'Failed to update profile.');
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const handleSaveProfile = () => {
-    const fullName = `${profile.firstName} ${profile.lastName}`.trim();
-    const updatedUser = { ...initialUser, name: fullName, email: profile.email };
-    localStorage.setItem('mock_token', JSON.stringify(updatedUser));
-    showToast('Profile updated successfully!');
-    // trigger a reload to update sidebar or we can just rely on state
-    window.dispatchEvent(new Event('storage'));
+  const toggleNotification = (key) => {
+    setNotifications((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
   return (
@@ -52,6 +77,8 @@ const Settings = () => {
         <h1>Settings</h1>
         <p>Manage your account preferences and personal information.</p>
       </div>
+
+      {error && <div className="error-alert" style={{ color: '#dc2626', margin: '12px 0' }}>{error}</div>}
 
       <div className="settings-content">
         <div className="settings-sidebar">
@@ -71,117 +98,97 @@ const Settings = () => {
 
         <div className="settings-main">
           {activeTab === 'profile' && (
-            <>
-              <div className="settings-section-title">Profile Information</div>
-              
-              <div className="profile-avatar-section">
-                <div className="avatar-large">{profile.firstName[0]}{profile.lastName[0]}</div>
-                <div className="avatar-actions">
-                  <button className="btn btn-outline-primary">Change Picture</button>
-                  <button className="btn" style={{ color: 'var(--text-secondary)' }}>Remove</button>
-                </div>
-              </div>
+            loading ? (
+              <p style={{ color: 'var(--text-secondary)' }}>
+                <Loader2 size={16} style={{ verticalAlign: 'middle', marginRight: '6px' }} />
+                Loading profile…
+              </p>
+            ) : (
+              <>
+                <div className="settings-section-title">Profile Information</div>
 
-              <div className="form-row">
-                <div className="form-group">
-                  <label className="form-label">First Name</label>
-                  <input type="text" className="form-control" name="firstName" value={profile.firstName} onChange={handleProfileChange} />
+                <div className="profile-avatar-section">
+                  <div className="avatar-large">
+                    {(fullName || '?').trim().split(/\s+/).slice(0, 2).map((w) => w[0]?.toUpperCase()).join('')}
+                  </div>
                 </div>
-                <div className="form-group">
-                  <label className="form-label">Last Name</label>
-                  <input type="text" className="form-control" name="lastName" value={profile.lastName} onChange={handleProfileChange} />
-                </div>
-              </div>
 
-              <div className="form-group">
-                <label className="form-label">Email Address</label>
-                <input type="email" className="form-control" name="email" value={profile.email} onChange={handleProfileChange} />
-              </div>
-
-              <div className="form-row">
                 <div className="form-group">
-                  <label className="form-label">Phone Number</label>
-                  <input type="tel" className="form-control" name="phone" value={profile.phone} onChange={handleProfileChange} />
+                  <label className="form-label">Full Name</label>
+                  <input
+                    type="text"
+                    className="form-control"
+                    value={fullName}
+                    onChange={(e) => setFullName(e.target.value)}
+                  />
                 </div>
-                <div className="form-group">
-                  <label className="form-label">Grade / Class</label>
-                  <select className="form-control" name="grade" value={profile.grade} onChange={handleProfileChange}>
-                    <option value="11">Class 11</option>
-                    <option value="12">Class 12</option>
-                    <option value="dropper">Dropper</option>
-                  </select>
-                </div>
-              </div>
 
-              <div className="settings-footer">
-                <button className="btn btn-outline-primary" onClick={() => {
-                  setProfile({
-                    firstName: initialUser.name?.split(' ')[0] || '',
-                    lastName: initialUser.name?.split(' ')[1] || '',
-                    email: initialUser.email || '',
-                    phone: '+1 (555) 000-0000',
-                    grade: '12'
-                  });
-                }}>Discard Changes</button>
-                <button className="btn btn-primary" onClick={handleSaveProfile}>Save Changes</button>
-              </div>
-            </>
+                <div className="form-group">
+                  <label className="form-label">Email Address</label>
+                  <input type="email" className="form-control" value={profile?.email || ''} disabled readOnly />
+                  <small style={{ color: 'var(--text-secondary)' }}>
+                    Email is managed by your account provider and can't be changed here.
+                  </small>
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label">Role</label>
+                  <input type="text" className="form-control" value={profile?.role || ''} disabled readOnly />
+                </div>
+
+                <div className="settings-footer">
+                  <button
+                    className="btn btn-outline-primary"
+                    onClick={() => setFullName(profile?.full_name || '')}
+                    disabled={saving}
+                  >
+                    Discard Changes
+                  </button>
+                  <button className="btn btn-primary" onClick={handleSaveProfile} disabled={saving}>
+                    {saving ? 'Saving…' : 'Save Changes'}
+                  </button>
+                </div>
+              </>
+            )
           )}
 
           {activeTab === 'notifications' && (
             <>
               <div className="settings-section-title">Notification Preferences</div>
-              
-              <div className="toggle-row">
-                <div className="toggle-info">
-                  <h4>Email Notifications</h4>
-                  <p>Receive updates about your test scores and reports via email.</p>
-                </div>
-                <div className={`toggle-switch ${notifications.email ? 'active' : ''}`} onClick={() => toggleNotification('email')}>
-                  <div className="toggle-knob"></div>
-                </div>
-              </div>
+              <p style={{ color: 'var(--text-secondary)', marginBottom: '16px' }}>
+                These preferences apply to this browser only — server-side delivery isn't wired up yet.
+              </p>
 
-              <div className="toggle-row">
-                <div className="toggle-info">
-                  <h4>Push Notifications</h4>
-                  <p>Get real-time alerts when a teacher answers your live doubt.</p>
+              {[
+                ['email', 'Email Notifications', 'Receive updates about your test scores and reports via email.'],
+                ['app', 'Push Notifications', 'Get real-time alerts when a teacher answers your live doubt.'],
+                ['sms', 'SMS Alerts', 'Receive text messages for upcoming scheduled exams.'],
+                ['marketing', 'Marketing Updates', 'Receive news about new features, courses, and offers.'],
+              ].map(([key, title, desc]) => (
+                <div className="toggle-row" key={key}>
+                  <div className="toggle-info">
+                    <h4>{title}</h4>
+                    <p>{desc}</p>
+                  </div>
+                  <div
+                    className={`toggle-switch ${notifications[key] ? 'active' : ''}`}
+                    onClick={() => toggleNotification(key)}
+                  >
+                    <div className="toggle-knob"></div>
+                  </div>
                 </div>
-                <div className={`toggle-switch ${notifications.app ? 'active' : ''}`} onClick={() => toggleNotification('app')}>
-                  <div className="toggle-knob"></div>
-                </div>
-              </div>
-
-              <div className="toggle-row">
-                <div className="toggle-info">
-                  <h4>SMS Alerts</h4>
-                  <p>Receive text messages for upcoming scheduled exams.</p>
-                </div>
-                <div className={`toggle-switch ${notifications.sms ? 'active' : ''}`} onClick={() => toggleNotification('sms')}>
-                  <div className="toggle-knob"></div>
-                </div>
-              </div>
-
-              <div className="toggle-row">
-                <div className="toggle-info">
-                  <h4>Marketing Updates</h4>
-                  <p>Receive news about new features, courses, and offers.</p>
-                </div>
-                <div className={`toggle-switch ${notifications.marketing ? 'active' : ''}`} onClick={() => toggleNotification('marketing')}>
-                  <div className="toggle-knob"></div>
-                </div>
-              </div>
-
-              <div className="settings-footer">
-                <button className="btn btn-primary" onClick={() => showToast('Preferences Saved!')}>Save Preferences</button>
-              </div>
+              ))}
             </>
           )}
 
           {(activeTab === 'security' || activeTab === 'appearance') && (
             <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text-secondary)' }}>
-              <h3>Coming Soon</h3>
-              <p>This section is under development.</p>
+              <h3>Not available yet</h3>
+              <p>
+                {activeTab === 'security'
+                  ? 'Password changes need a backend endpoint that does not exist yet.'
+                  : 'Theme options are still in development.'}
+              </p>
             </div>
           )}
         </div>

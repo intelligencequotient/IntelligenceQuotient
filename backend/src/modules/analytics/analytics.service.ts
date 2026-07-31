@@ -13,10 +13,13 @@ export class AnalyticsService {
       .eq('status', 'submitted')
       .order('submitted_at', { ascending: true });
 
-    // Fetch per-question answer accuracy
+    // Fetch per-question answer accuracy.
+    // NOTE: `attempts!inner` must be part of the select — filtering on
+    // `attempts.student_id` without embedding the relation is rejected by
+    // PostgREST and silently returned an empty breakdown.
     const { data: answers } = await supabase
       .from('answers')
-      .select('is_correct, questions(subject, topic, difficulty)')
+      .select('is_correct, attempts!inner(student_id), questions(subject, topic, difficulty)')
       .eq('attempts.student_id', studentId);
 
     // Build subject breakdown
@@ -85,22 +88,115 @@ export class AnalyticsService {
     const { data: students } = await studentQuery;
     const studentIds = (students || []).map((s) => s.id);
 
-    if (!studentIds.length) return { totalStudents: 0, avgScore: 0, subjectBreakdown: [] };
+    if (!studentIds.length) {
+      return {
+        totalStudents: 0,
+        avgScore: 0,
+        avgPercentage: 0,
+        atRiskCount: 0,
+        totalAttempts: 0,
+        scoreTrend: [],
+        distribution: [],
+        missedTopics: [],
+      };
+    }
 
     // Get all submitted attempts for these students
     const { data: attempts } = await supabase
       .from('attempts')
-      .select('student_id, total_score, tests(total_marks)')
+      .select('student_id, total_score, submitted_at, tests(id, title, total_marks)')
       .in('student_id', studentIds)
-      .eq('status', 'submitted');
+      .eq('status', 'submitted')
+      .order('submitted_at', { ascending: true });
+
+    const rows = attempts || [];
 
     const avgScore =
-      (attempts || []).length > 0
-        ? Math.round(
-            (attempts || []).reduce((sum, a) => sum + (Number(a.total_score) || 0), 0) /
-              (attempts || []).length,
-          )
+      rows.length > 0
+        ? Math.round(rows.reduce((sum, a) => sum + (Number(a.total_score) || 0), 0) / rows.length)
         : 0;
+
+    // Percentage is the only fair way to compare across tests with different totals
+    const pct = (a: any) => {
+      const max = Number((a.tests as any)?.total_marks) || 0;
+      return max > 0 ? (Number(a.total_score) || 0) / max * 100 : 0;
+    };
+
+    const avgPercentage =
+      rows.length > 0 ? Math.round(rows.reduce((s, a) => s + pct(a), 0) / rows.length) : 0;
+
+    // Average score per test, in submission order — drives the trend line
+    const perTest = new Map<string, { title: string; sum: number; n: number }>();
+    for (const a of rows) {
+      const test = a.tests as any;
+      if (!test?.id) continue;
+      if (!perTest.has(test.id)) perTest.set(test.id, { title: test.title, sum: 0, n: 0 });
+      const entry = perTest.get(test.id)!;
+      entry.sum += pct(a);
+      entry.n += 1;
+    }
+    const scoreTrend = Array.from(perTest.values()).map((t) => ({
+      name: t.title,
+      score: Math.round(t.sum / t.n),
+      attempts: t.n,
+    }));
+
+    // Histogram of attempt percentages
+    const buckets = [
+      { range: '0-20', count: 0 },
+      { range: '21-40', count: 0 },
+      { range: '41-60', count: 0 },
+      { range: '61-80', count: 0 },
+      { range: '81-100', count: 0 },
+    ];
+    for (const a of rows) {
+      const p = pct(a);
+      const idx = p <= 20 ? 0 : p <= 40 ? 1 : p <= 60 ? 2 : p <= 80 ? 3 : 4;
+      buckets[idx].count += 1;
+    }
+
+    // Topics this cohort gets wrong most often
+    const { data: answerRows } = await supabase
+      .from('answers')
+      .select('is_correct, attempts!inner(student_id), questions!inner(topic, subject, difficulty)')
+      .in('attempts.student_id', studentIds);
+
+    const topicMap = new Map<
+      string,
+      { topic: string; subject: string; difficulty: string; wrong: number; total: number }
+    >();
+    for (const ans of answerRows || []) {
+      const q = (ans as any).questions;
+      if (!q?.topic) continue;
+      // Unattempted rows (is_correct === null) aren't evidence of a misconception
+      if (ans.is_correct === null || ans.is_correct === undefined) continue;
+
+      const key = `${q.subject}::${q.topic}`;
+      if (!topicMap.has(key)) {
+        topicMap.set(key, {
+          topic: q.topic,
+          subject: q.subject,
+          difficulty: q.difficulty,
+          wrong: 0,
+          total: 0,
+        });
+      }
+      const entry = topicMap.get(key)!;
+      entry.total += 1;
+      if (ans.is_correct === false) entry.wrong += 1;
+    }
+
+    const missedTopics = Array.from(topicMap.values())
+      .filter((t) => t.total >= 3) // ignore topics with too little signal
+      .map((t) => ({
+        topic: t.topic,
+        subject: t.subject,
+        difficulty: t.difficulty,
+        wrongPercent: Math.round((t.wrong / t.total) * 100),
+        sampleSize: t.total,
+      }))
+      .sort((a, b) => b.wrongPercent - a.wrongPercent)
+      .slice(0, 5);
 
     // At-risk count (students in predictions with risk_flag = true)
     const { data: riskStudents } = await supabase
@@ -114,8 +210,12 @@ export class AnalyticsService {
     return {
       totalStudents: studentIds.length,
       avgScore,
+      avgPercentage,
       atRiskCount,
-      totalAttempts: attempts?.length || 0,
+      totalAttempts: rows.length,
+      scoreTrend,
+      distribution: buckets,
+      missedTopics,
     };
   }
 

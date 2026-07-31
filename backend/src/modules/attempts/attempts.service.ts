@@ -194,17 +194,19 @@ export class AttemptsService {
       answerUpdates.push({
         attempt_id: attemptId,
         question_id: questionId,
+        selected_answer: studentAnswer ?? null,
         is_correct: studentAnswer !== undefined ? isCorrect : null,
       });
     }
 
-    // Update all answer rows with is_correct
-    for (const upd of answerUpdates) {
-      await supabase
+    // Write every graded question in one round trip.
+    // Upsert (not update) so unattempted questions also get a row — otherwise
+    // they vanish from the result page's answer review and from analytics.
+    if (answerUpdates.length) {
+      const { error: gradeError } = await supabase
         .from('answers')
-        .update({ is_correct: upd.is_correct })
-        .eq('attempt_id', upd.attempt_id)
-        .eq('question_id', upd.question_id);
+        .upsert(answerUpdates, { onConflict: 'attempt_id,question_id' });
+      if (gradeError) throw new Error(gradeError.message);
     }
 
     const submittedAt = new Date();

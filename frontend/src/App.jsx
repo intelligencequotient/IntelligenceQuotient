@@ -59,7 +59,7 @@ function App() {
               {/* Student Routes */}
               <Route index element={<StudentDashboard />} />
               <Route path="subject/:subjectId" element={<SubjectLanding />} />
-              <Route path="result/:testId" element={<PostTestResult />} />
+              <Route path="result/:attemptId" element={<PostTestResult />} />
               <Route path="analytics" element={<AnalyticsHub />} />
               <Route path="doubts" element={<LiveDoubtClient />} />
               <Route path="leaderboard" element={<Leaderboard />} />

@@ -7,7 +7,7 @@ export class TestsService {
   async findAll(teacherId: string, status?: string) {
     let query = supabase
       .from('tests')
-      .select('id, title, description, t_type, status, duration_minutes, total_marks, created_at, created_by')
+      .select('id, title, description, subject, t_type, status, duration_minutes, total_marks, negative_marking, negative_marks, created_at, created_by')
       .order('created_at', { ascending: false });
 
     if (status) query = query.eq('status', status);
@@ -33,8 +33,9 @@ export class TestsService {
     const { data, error } = await supabase
       .from('tests')
       .select(`
-        id, title, description, t_type, status, duration_minutes, total_marks, created_at, created_by,
-        test_questions(question_order, marks_override, questions(id, subject, topic, question_text, options, difficulty, q_type))
+        id, title, description, subject, t_type, status, duration_minutes, total_marks,
+        negative_marking, negative_marks, created_at, created_by,
+        test_questions(question_order, marks_override, questions(id, subject, topic, question_text, options, difficulty, q_type, marks, image_url))
       `)
       .eq('id', id)
       .single();
@@ -230,9 +231,21 @@ export class TestsService {
     return data;
   }
 
-  /** Get all student results for a test (teacher view) */
+  /**
+   * Full result set for a test (teacher view): the ranked scoreboard, cohort
+   * summary stats, and a per-question breakdown showing which items the class
+   * struggled with.
+   */
   async getResults(testId: string) {
-    const { data, error } = await supabase
+    const { data: test } = await supabase
+      .from('tests')
+      .select('id, title, total_marks, duration_minutes')
+      .eq('id', testId)
+      .single();
+
+    if (!test) throw new NotFoundException('Test not found');
+
+    const { data: attempts, error } = await supabase
       .from('attempts')
       .select(`
         id, total_score, status, started_at, submitted_at, auto_submitted,
@@ -243,7 +256,87 @@ export class TestsService {
       .order('total_score', { ascending: false });
 
     if (error) throw new Error(error.message);
-    return data;
+
+    const rows = attempts || [];
+    const scores = rows.map((a: any) => Number(a.total_score) || 0);
+    const maxMarks = Number(test.total_marks) || 0;
+
+    // How many students were expected to sit this test?
+    const { count: assignedCount } = await supabase
+      .from('test_assignments')
+      .select('*', { count: 'exact', head: true })
+      .eq('test_id', testId);
+
+    const sorted = [...scores].sort((a, b) => a - b);
+    const median = sorted.length
+      ? sorted.length % 2
+        ? sorted[(sorted.length - 1) / 2]
+        : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2
+      : 0;
+
+    // Per-question difficulty across everyone who sat the test.
+    const attemptIds = rows.map((a: any) => a.id);
+    const questionStats: any[] = [];
+
+    if (attemptIds.length) {
+      const { data: answers } = await supabase
+        .from('answers')
+        .select('question_id, is_correct, questions(question_text, subject, topic)')
+        .in('attempt_id', attemptIds);
+
+      const byQuestion = new Map<string, any>();
+      for (const ans of (answers || []) as any[]) {
+        const id = ans.question_id;
+        if (!byQuestion.has(id)) {
+          byQuestion.set(id, {
+            questionId: id,
+            questionText: ans.questions?.question_text || '',
+            subject: ans.questions?.subject || 'Unknown',
+            topic: ans.questions?.topic || null,
+            correct: 0,
+            incorrect: 0,
+            unattempted: 0,
+          });
+        }
+        const stat = byQuestion.get(id);
+        if (ans.is_correct === true) stat.correct += 1;
+        else if (ans.is_correct === false) stat.incorrect += 1;
+        else stat.unattempted += 1;
+      }
+
+      for (const stat of byQuestion.values()) {
+        const answered = stat.correct + stat.incorrect;
+        questionStats.push({
+          ...stat,
+          accuracy: answered > 0 ? Math.round((stat.correct / answered) * 100) : 0,
+        });
+      }
+      // Hardest first — that is what a teacher wants to re-teach.
+      questionStats.sort((a, b) => a.accuracy - b.accuracy);
+    }
+
+    return {
+      test,
+      summary: {
+        submitted: rows.length,
+        assigned: assignedCount ?? 0,
+        notAttempted: Math.max(0, (assignedCount ?? 0) - rows.length),
+        maxMarks,
+        highest: scores.length ? Math.max(...scores) : 0,
+        lowest: scores.length ? Math.min(...scores) : 0,
+        average: scores.length
+          ? Number((scores.reduce((s, v) => s + v, 0) / scores.length).toFixed(2))
+          : 0,
+        median: Number(median.toFixed(2)),
+        autoSubmitted: rows.filter((a: any) => a.auto_submitted).length,
+      },
+      results: rows.map((a: any, idx: number) => ({
+        ...a,
+        rank: idx + 1,
+        percentage: maxMarks > 0 ? Math.round(((Number(a.total_score) || 0) / maxMarks) * 100) : 0,
+      })),
+      questionStats,
+    };
   }
 
   /**
@@ -260,6 +353,9 @@ export class TestsService {
     batch_ids: string[];
     scheduled_start?: string;
     scheduled_end?: string;
+    negative_marking?: boolean;
+    negative_marks?: number;
+    subject?: string;
   }, user: any) {
     const teacherId = user.id;
     
@@ -283,10 +379,14 @@ export class TestsService {
       .insert({
         title: body.title,
         description: body.description,
+        subject: body.subject,
         t_type: body.t_type || 'quiz',
         duration_minutes: body.duration_minutes,
         total_marks: body.total_marks,
         status: body.status,
+        // Real columns now, so grading can actually apply the penalty.
+        negative_marking: body.negative_marking === true,
+        negative_marks: body.negative_marking ? Number(body.negative_marks) || 0 : 0,
         created_by: teacherId
       })
       .select()

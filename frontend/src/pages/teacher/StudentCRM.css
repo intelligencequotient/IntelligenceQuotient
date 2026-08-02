@@ -267,3 +267,33 @@
   border: 1px solid var(--border-color);
 }
 
+
+/* ── Added: real filters, stats pills, states ────────────────────────────── */
+
+.crm-muted { color: var(--text-secondary, #64748b); }
+.crm-small { font-size: 0.76rem; }
+.crm-error { color: #dc2626; margin-bottom: 14px; }
+.crm-email { display: block; }
+
+.crm-select {
+  padding: 9px 12px; border-radius: 8px; font-size: 0.86rem; cursor: pointer;
+  border: 1px solid var(--border-color, #e2e8f0);
+  background: var(--input-bg, #fff); color: var(--text-primary, #1e293b);
+}
+
+.crm-state { text-align: center; padding: 34px; color: var(--text-secondary, #94a3b8); }
+.crm-state p { margin: 8px 0 0; }
+
+.crm-pill {
+  display: inline-block; padding: 3px 10px; border-radius: 999px;
+  font-size: 0.76rem; font-weight: 700;
+}
+.crm-pill.good { background: rgba(16, 185, 129, 0.12); color: #059669; }
+.crm-pill.mid  { background: rgba(245, 158, 11, 0.14); color: #b45309; }
+.crm-pill.bad  { background: rgba(239, 68, 68, 0.12);  color: #dc2626; }
+
+.status-dot.at-risk { background: #ef4444; }
+.status-dot.active  { background: #10b981; }
+
+.table-container { overflow-x: auto; }
+.crm-table { min-width: 720px; }

@@ -1,129 +1,203 @@
-import React from 'react';
-import { useNavigate } from 'react-router-dom';
-import { X, Download, Printer } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { X, Printer, FileText } from 'lucide-react';
+import { apiClient } from '../../api/client';
+import MathText from '../../components/MathText';
 import './PDFPreviewModal.css';
 
+/**
+ * Printable exam paper.
+ *
+ * This page used to render a fixed dummy paper ("Weekly Mock Test #4"), and its
+ * "Download PDF" button produced a text file containing the literal string
+ * "Mock PDF Content". It now renders a real test (`?testId=…`) and prints
+ * through the browser, which is what actually produces a usable PDF.
+ */
 const PDFPreviewModal = () => {
   const navigate = useNavigate();
+  const [params] = useSearchParams();
+  const testId = params.get('testId');
 
-  const handleClose = () => {
-    navigate(-1); // Go back to previous page (likely test constructor or csv upload)
-  };
+  const [test, setTest] = useState(null);
+  const [tests, setTests] = useState([]);
+  const [showAnswers, setShowAnswers] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
-  const handlePrint = () => {
-    window.print();
-  };
+  useEffect(() => {
+    let cancelled = false;
 
-  const handleDownload = () => {
-    // Mock download behavior
-    const link = document.createElement('a');
-    link.href = 'data:text/plain;charset=utf-8,' + encodeURIComponent('Mock PDF Content');
-    link.download = 'Exam_Preview.pdf';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
+    (async () => {
+      setLoading(true);
+      setError('');
+      try {
+        if (testId) {
+          const data = await apiClient.get(`/tests/${testId}`);
+          if (!cancelled) setTest(data);
+        } else {
+          // No test chosen — offer a picker rather than a fake paper.
+          const list = await apiClient.get('/tests');
+          if (!cancelled) setTests(list || []);
+        }
+      } catch (e) {
+        if (!cancelled) setError(e.message || 'Could not load the test.');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [testId]);
+
+  const questions = (test?.test_questions || [])
+    .slice()
+    .sort((a, b) => (a.question_order || 0) - (b.question_order || 0));
+
+  if (loading) return <div className="pdf-preview-page"><p className="pv-muted">Loading…</p></div>;
+
+  // Picker shown when no test id was supplied.
+  if (!testId) {
+    return (
+      <div className="pdf-preview-page">
+        <div className="preview-toolbar">
+          <div className="toolbar-left"><h2>Print a Test</h2></div>
+          <div className="toolbar-right">
+            <button className="icon-close" onClick={() => navigate(-1)}><X size={24} /></button>
+          </div>
+        </div>
+
+        <div className="pv-picker">
+          {error && <p className="pv-error">{error}</p>}
+          {tests.length === 0 ? (
+            <div className="pv-empty">
+              <FileText size={38} />
+              <p>No tests available to print yet.</p>
+            </div>
+          ) : (
+            <ul className="pv-test-list">
+              {tests.map((t) => (
+                <li key={t.id}>
+                  <button onClick={() => navigate(`/teacher/pdf-preview?testId=${t.id}`)}>
+                    <span className="pv-test-title">{t.title}</span>
+                    <span className="pv-muted pv-small">
+                      {t.duration_minutes} min · {t.total_marks} marks · {t.status}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  if (error || !test) {
+    return (
+      <div className="pdf-preview-page">
+        <p className="pv-error">{error || 'Test not found.'}</p>
+        <button className="btn-outline" onClick={() => navigate('/teacher/test-library')}>
+          Back to Test Library
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="pdf-preview-page">
+      {/* Toolbar is hidden when printing — see the @media print rules. */}
       <div className="preview-toolbar">
         <div className="toolbar-left">
           <h2>Document Preview</h2>
           <span className="badge">Print Layout</span>
         </div>
         <div className="toolbar-right">
-          <button className="btn-outline" onClick={handleClose}>Back to Edit</button>
-          <button className="btn-primary" onClick={handlePrint}><Printer size={18} /> Print</button>
-          <button className="btn-primary" onClick={handleDownload}><Download size={18} /> Download PDF</button>
-          <button className="icon-close" onClick={handleClose}><X size={24} /></button>
+          <label className="pv-toggle">
+            <input
+              type="checkbox"
+              checked={showAnswers}
+              onChange={(e) => setShowAnswers(e.target.checked)}
+            />
+            Answer key
+          </label>
+          <button className="btn-outline" onClick={() => navigate(-1)}>Back</button>
+          <button className="btn-primary" onClick={() => window.print()}>
+            <Printer size={18} /> Print / Save as PDF
+          </button>
+          <button className="icon-close" onClick={() => navigate(-1)}><X size={24} /></button>
         </div>
       </div>
 
       <div className="pdf-document-container">
         <div className="pdf-page">
-          {/* Header */}
           <div className="exam-header">
-            <div className="institution-info">
-              <h1>EduCommand Academy</h1>
-              <p>Excellence in Education</p>
+            <h1>{test.title}</h1>
+            <div className="pv-header-meta">
+              <span><strong>Duration:</strong> {test.duration_minutes} minutes</span>
+              <span><strong>Maximum Marks:</strong> {test.total_marks}</span>
+              {test.negative_marking && (
+                <span><strong>Negative marking:</strong> −{test.negative_marks} per wrong answer</span>
+              )}
             </div>
-            
-            <div className="exam-meta-box">
-              <div className="exam-title-row">
-                <h2>Weekly Mock Test #4</h2>
-                <span className="exam-subject">Physics</span>
-              </div>
-              <div className="exam-details-row">
-                <span><strong>Duration:</strong> 60 Minutes</span>
-                <span><strong>Total Marks:</strong> 100</span>
-                <span><strong>Date:</strong> 24 Oct 2023</span>
-              </div>
-            </div>
-            
-            <div className="student-fill-info">
-              <div className="fill-line"><span>Name:</span><div className="line"></div></div>
-              <div className="fill-line"><span>Batch:</span><div className="line"></div></div>
-              <div className="fill-line"><span>Date:</span><div className="line"></div></div>
-            </div>
-            
-            <div className="instructions">
-              <strong>Instructions:</strong>
-              <ul>
-                <li>All questions are compulsory.</li>
-                <li>Each correct answer carries 4 marks.</li>
-                <li>1 mark will be deducted for each incorrect answer.</li>
-              </ul>
+            {test.description && <p className="pv-desc">{test.description}</p>}
+            <div className="pv-namebar">
+              <span>Name: ________________________</span>
+              <span>Roll No: ____________</span>
             </div>
           </div>
 
-          <hr className="divider" />
+          {questions.length === 0 ? (
+            <p className="pv-muted">This test has no questions yet.</p>
+          ) : (
+            <ol className="pv-questions">
+              {questions.map((tq) => {
+                const q = tq.questions || {};
+                const marks = tq.marks_override || q.marks || 4;
+                const correctIndex = q.correct_answer?.index;
 
-          {/* Questions */}
-          <div className="questions-section">
-            <div className="question-item">
-              <div className="q-number">Q1.</div>
-              <div className="q-content">
-                <p>Calculate the derivative of f(x) = 3x² + 5x - 2 with respect to x.</p>
-                <div className="options-grid">
-                  <div className="option">(A) 6x + 5</div>
-                  <div className="option">(B) 3x + 5</div>
-                  <div className="option">(C) 6x - 2</div>
-                  <div className="option">(D) x² + 5</div>
-                </div>
+                return (
+                  <li key={q.id} className="pv-question">
+                    <div className="pv-question-head">
+                      <MathText as="div" className="pv-question-text" text={q.question_text || ''} />
+                      <span className="pv-marks">[{marks}]</span>
+                    </div>
+
+                    {q.image_url && (
+                      <img className="pv-question-image" src={q.image_url} alt="Question diagram" />
+                    )}
+
+                    {Array.isArray(q.options) && (
+                      <ol className="pv-options">
+                        {q.options.map((opt, idx) => (
+                          <li key={idx} className={showAnswers && idx === correctIndex ? 'pv-correct' : ''}>
+                            <span className="pv-opt-letter">({['a', 'b', 'c', 'd'][idx]})</span>
+                            <MathText text={String(opt)} />
+                          </li>
+                        ))}
+                      </ol>
+                    )}
+                  </li>
+                );
+              })}
+            </ol>
+          )}
+
+          {showAnswers && questions.length > 0 && (
+            <div className="pv-answer-key">
+              <h3>Answer Key</h3>
+              <div className="pv-key-grid">
+                {questions.map((tq, i) => {
+                  const idx = tq.questions?.correct_answer?.index;
+                  const value = tq.questions?.correct_answer?.value;
+                  return (
+                    <span key={tq.questions?.id || i}>
+                      {i + 1}. {value !== undefined ? value : (['a', 'b', 'c', 'd'][idx] ?? '—')}
+                    </span>
+                  );
+                })}
               </div>
             </div>
-
-            <div className="question-item">
-              <div className="q-number">Q2.</div>
-              <div className="q-content">
-                <p>A particle moves along a straight line such that its displacement s at time t is given by s = t³ - 6t² + 3t + 4. Find the velocity when the acceleration is zero.</p>
-                <div className="options-grid">
-                  <div className="option">(A) -9 m/s</div>
-                  <div className="option">(B) 3 m/s</div>
-                  <div className="option">(C) 12 m/s</div>
-                  <div className="option">(D) 0 m/s</div>
-                </div>
-              </div>
-            </div>
-
-            <div className="question-item">
-              <div className="q-number">Q3.</div>
-              <div className="q-content">
-                <p>What is the SI unit of Force?</p>
-                <div className="options-grid">
-                  <div className="option">(A) Joule</div>
-                  <div className="option">(B) Newton</div>
-                  <div className="option">(C) Watt</div>
-                  <div className="option">(D) Pascal</div>
-                </div>
-              </div>
-            </div>
-          </div>
-          
-          <div className="page-footer">
-            <span>EduCommand - Internal Use Only</span>
-            <span>Page 1 of 4</span>
-          </div>
+          )}
         </div>
       </div>
     </div>

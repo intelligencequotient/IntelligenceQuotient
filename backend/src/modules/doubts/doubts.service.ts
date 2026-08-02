@@ -348,6 +348,8 @@ export class DoubtsService {
       .from('question-images')
       .upload(fileName, file.buffer, {
         contentType: sniffed,
+        // Chat attachments never change once uploaded.
+        cacheControl: '31536000',
         upsert: false,
       });
 
@@ -365,7 +367,7 @@ export class DoubtsService {
   async remove(doubtId: string, user: Requester) {
     const doubt = await this.loadOwnership(doubtId);
     if (user.role !== 'admin' && user.role !== 'teacher' && doubt.student_id !== user.id) {
-      throw new import('@nestjs/common').ForbiddenException('Only admins, teachers, or the creator can delete this doubt.');
+      throw new ForbiddenException('Only admins, teachers, or the creator can delete this doubt.');
     }
 
     // Delete associated messages first to satisfy foreign key constraints

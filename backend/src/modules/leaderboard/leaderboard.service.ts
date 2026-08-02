@@ -1,109 +1,149 @@
 import { Injectable } from '@nestjs/common';
 import { supabase } from '../../config/supabase.config';
+import { CacheService } from '../../common/cache/cache.service';
+
+/**
+ * Rankings are derived by aggregating every submitted attempt, which is far too
+ * expensive to redo on each request. Results are cached with a short TTL —
+ * a leaderboard that is up to 5 minutes stale is fine, a slow one is not.
+ */
+const LEADERBOARD_TTL_SECONDS = Number(process.env.LEADERBOARD_TTL_SECONDS) || 300;
+
+const CACHE_PREFIX = 'leaderboard:';
+
+export interface RankedStudent {
+  rank: number;
+  id: string;
+  name: string;
+  totalScore: number;
+  testCount: number;
+  bestScore: number;
+}
 
 @Injectable()
 export class LeaderboardService {
+  constructor(private readonly cache: CacheService) {}
+
+  /**
+   * Builds the full ranking once, then serves slices from it.
+   * (The previous implementation ran the same query twice and threw the first
+   * result away, then re-scanned the whole table for every `getMyRank` call.)
+   */
+  private async buildRanking(): Promise<RankedStudent[]> {
+    return this.cache.wrap(`${CACHE_PREFIX}global`, LEADERBOARD_TTL_SECONDS, async () => {
+      const { data, error } = await supabase
+        .from('attempts')
+        .select('student_id, total_score, users(id, full_name)')
+        .eq('status', 'submitted');
+
+      if (error) throw new Error(error.message);
+
+      const totals = new Map<
+        string,
+        { id: string; name: string; totalScore: number; testCount: number; bestScore: number }
+      >();
+
+      for (const attempt of data || []) {
+        const id = attempt.student_id;
+        const score = Number(attempt.total_score) || 0;
+        const name = (attempt.users as any)?.full_name || 'Unknown';
+
+        const entry = totals.get(id) ?? {
+          id,
+          name,
+          totalScore: 0,
+          testCount: 0,
+          bestScore: 0,
+        };
+        entry.totalScore += score;
+        entry.testCount += 1;
+        entry.bestScore = Math.max(entry.bestScore, score);
+        totals.set(id, entry);
+      }
+
+      // Ties share a rank (standard competition ranking: 1, 2, 2, 4).
+      const sorted = Array.from(totals.values()).sort((a, b) => b.totalScore - a.totalScore);
+
+      let lastScore: number | null = null;
+      let lastRank = 0;
+      return sorted.map((student, idx) => {
+        const rank = student.totalScore === lastScore ? lastRank : idx + 1;
+        lastScore = student.totalScore;
+        lastRank = rank;
+        return { rank, ...student };
+      });
+    });
+  }
+
   /** Global leaderboard — all students ranked by total score */
   async getGlobal(page = 1, limit = 50) {
-    const from = (page - 1) * limit;
-    const to = from + limit - 1;
+    const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 200);
+    const safePage = Math.max(Number(page) || 1, 1);
+    const from = (safePage - 1) * safeLimit;
 
-    // Sum total_score per student across all submitted attempts
-    const { data, error } = await supabase
-      .from('attempts')
-      .select('student_id, users(id, full_name)')
-      .eq('status', 'submitted');
-
-    if (error) throw new Error(error.message);
-
-    // Aggregate scores per student
-    const scoreMap = new Map<string, { name: string; totalScore: number; testCount: number }>();
-    for (const a of data || []) {
-      const sid = a.student_id;
-      const name = (a.users as any)?.full_name || 'Unknown';
-      if (!scoreMap.has(sid)) {
-        scoreMap.set(sid, { name, totalScore: 0, testCount: 0 });
-      }
-      const entry = scoreMap.get(sid)!;
-      entry.testCount += 1;
-    }
-
-    // Re-fetch with scores
-    const { data: scored } = await supabase
-      .from('attempts')
-      .select('student_id, total_score, users(id, full_name)')
-      .eq('status', 'submitted');
-
-    const finalMap = new Map<string, { id: string; name: string; totalScore: number; testCount: number }>();
-    for (const a of scored || []) {
-      const sid = a.student_id;
-      const name = (a.users as any)?.full_name || 'Unknown';
-      if (!finalMap.has(sid)) {
-        finalMap.set(sid, { id: sid, name, totalScore: 0, testCount: 0 });
-      }
-      const entry = finalMap.get(sid)!;
-      entry.totalScore += Number(a.total_score) || 0;
-      entry.testCount += 1;
-    }
-
-    // Sort by total score descending and add rank
-    const sorted = Array.from(finalMap.values())
-      .sort((a, b) => b.totalScore - a.totalScore)
-      .map((s, idx) => ({ rank: idx + 1, ...s }));
+    const ranking = await this.buildRanking();
 
     return {
-      data: sorted.slice(from, to + 1),
-      total: sorted.length,
-      page,
-      limit,
+      data: ranking.slice(from, from + safeLimit),
+      total: ranking.length,
+      page: safePage,
+      limit: safeLimit,
     };
   }
 
-  /** Get leaderboard for a specific batch */
+  /** Leaderboard scoped to one batch */
   async getBatch(batchId: string) {
-    const { data: batchStudents } = await supabase
-      .from('batch_students')
-      .select('student_id')
-      .eq('batch_id', batchId);
+    return this.cache.wrap(
+      `${CACHE_PREFIX}batch:${batchId}`,
+      LEADERBOARD_TTL_SECONDS,
+      async () => {
+        const { data: batchStudents } = await supabase
+          .from('batch_students')
+          .select('student_id')
+          .eq('batch_id', batchId);
 
-    const studentIds = (batchStudents || []).map((b: any) => b.student_id);
-    if (!studentIds.length) return [];
+        const studentIds = new Set((batchStudents || []).map((b: any) => b.student_id));
+        if (!studentIds.size) return [];
 
-    const { data: scored } = await supabase
-      .from('attempts')
-      .select('student_id, total_score, users(id, full_name)')
-      .in('student_id', studentIds)
-      .eq('status', 'submitted');
+        // Reuse the global aggregate rather than re-querying attempts.
+        const ranking = await this.buildRanking();
 
-    const finalMap = new Map<string, { id: string; name: string; totalScore: number }>();
-    for (const a of scored || []) {
-      const sid = a.student_id;
-      const name = (a.users as any)?.full_name || 'Unknown';
-      if (!finalMap.has(sid)) finalMap.set(sid, { id: sid, name, totalScore: 0 });
-      finalMap.get(sid)!.totalScore += Number(a.total_score) || 0;
-    }
-
-    return Array.from(finalMap.values())
-      .sort((a, b) => b.totalScore - a.totalScore)
-      .map((s, idx) => ({ rank: idx + 1, ...s }));
+        let lastScore: number | null = null;
+        let lastRank = 0;
+        return ranking
+          .filter((s) => studentIds.has(s.id))
+          .map((student, idx) => {
+            const rank = student.totalScore === lastScore ? lastRank : idx + 1;
+            lastScore = student.totalScore;
+            lastRank = rank;
+            return { ...student, rank };
+          });
+      },
+    );
   }
 
-  /** Get the logged-in student's rank + 2 students above and below */
+  /** The logged-in student's rank plus two neighbours either side */
   async getMyRank(studentId: string) {
-    const result = await this.getGlobal(1, 10000);
-    const myIdx = result.data.findIndex((s) => s.id === studentId);
-    if (myIdx === -1) return { rank: null, neighbors: [] };
+    const ranking = await this.buildRanking();
+    const myIdx = ranking.findIndex((s) => s.id === studentId);
+
+    if (myIdx === -1) {
+      return { rank: null, totalStudents: ranking.length, neighbors: [] };
+    }
 
     const start = Math.max(0, myIdx - 2);
-    const end = Math.min(result.data.length, myIdx + 3);
+    const end = Math.min(ranking.length, myIdx + 3);
 
     return {
-      rank: myIdx + 1,
-      totalStudents: result.total,
-      neighbors: result.data.slice(start, end).map((s) => ({
-        ...s,
-        isMe: s.id === studentId,
-      })),
+      rank: ranking[myIdx].rank,
+      totalScore: ranking[myIdx].totalScore,
+      totalStudents: ranking.length,
+      neighbors: ranking.slice(start, end).map((s) => ({ ...s, isMe: s.id === studentId })),
     };
+  }
+
+  /** Called after a submission so a fresh score shows up without waiting for the TTL. */
+  async invalidate(): Promise<void> {
+    await this.cache.invalidate(CACHE_PREFIX);
   }
 }

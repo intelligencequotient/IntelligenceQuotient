@@ -250,3 +250,56 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* ── Added: real-data KPIs, weak topics, attempts ────────────────────────── */
+
+.sp-muted { color: var(--text-secondary, #64748b); }
+.sp-small { font-size: 0.77rem; }
+.sp-error { color: #dc2626; margin-top: 16px; }
+.sp-inline-empty { font-size: 0.87rem; padding: 22px 2px; margin: 0; }
+
+.sp-meta-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 6px 0; }
+.sp-risk {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 10px; border-radius: 999px; font-size: 0.73rem; font-weight: 700;
+  background: rgba(239, 68, 68, 0.12); color: #dc2626;
+}
+
+.sp-kpi-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 14px; margin: 20px 0;
+}
+.sp-kpi {
+  display: flex; align-items: center; gap: 12px;
+  background: var(--card-bg, #fff); border: 1px solid var(--border-color, #e2e8f0);
+  border-radius: 12px; padding: 15px 18px; color: var(--color-teacher-accent, #6366f1);
+}
+.sp-kpi-label {
+  display: block; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--text-secondary, #64748b);
+}
+.sp-kpi-value { display: block; font-size: 1.35rem; font-weight: 700; color: var(--text-primary, #1e293b); }
+
+.sp-grid { display: grid; grid-template-columns: 1fr; gap: 18px; margin-bottom: 18px; }
+@media (min-width: 900px) { .sp-grid { grid-template-columns: 1fr 1fr; } }
+
+.sp-card {
+  background: var(--card-bg, #fff); border: 1px solid var(--border-color, #e2e8f0);
+  border-radius: 12px; padding: 18px 20px;
+}
+.sp-card h3 { margin: 0 0 14px; font-size: 1rem; }
+
+.sp-weak-list, .sp-attempt-list { list-style: none; margin: 0; padding: 0; }
+.sp-weak-list li, .sp-attempt-list li {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 11px 0; border-bottom: 1px solid var(--border-color, #f1f5f9);
+}
+.sp-weak-list li:last-child, .sp-attempt-list li:last-child { border-bottom: none; }
+.sp-weak-topic, .sp-attempt-title { font-weight: 600; font-size: 0.89rem; }
+.sp-attempt-list span.sp-small { display: block; }
+
+.sp-pill {
+  padding: 3px 10px; border-radius: 999px; font-size: 0.76rem; font-weight: 700; white-space: nowrap;
+}
+.sp-pill.mid { background: rgba(245, 158, 11, 0.14); color: #b45309; }
+.sp-pill.bad { background: rgba(239, 68, 68, 0.12);  color: #dc2626; }

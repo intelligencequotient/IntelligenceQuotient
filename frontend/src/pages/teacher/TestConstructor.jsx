@@ -52,9 +52,13 @@ const TestConstructor = () => {
         setTestData(prev => ({
           ...prev,
           title: data.title,
+          subject: data.subject || prev.subject,
           duration: data.duration_minutes,
           totalMarks: data.total_marks,
-          negativeMarking: data.description?.includes('Negative Marking'),
+          // Read from the real columns, falling back to the old description
+          // convention for tests created before the migration.
+          negativeMarking: data.negative_marking ?? !!data.description?.includes('Negative Marking'),
+          negativeMarks: data.negative_marks ?? prev.negativeMarks,
         }));
         if (data.test_questions) {
           const qs = data.test_questions.map(tq => ({ ...tq.questions, marks: tq.questions.marks || 4 }));
@@ -82,13 +86,25 @@ const TestConstructor = () => {
         scheduledStart = new Date(`${testData.date}T${testData.time}`).toISOString();
       }
       
+      // Default the close of the window to 7 days out when only a start is given,
+      // so the backend's scheduled_end check has something meaningful to enforce.
+      if (scheduledStart && !scheduledEnd) {
+        scheduledEnd = new Date(
+          new Date(scheduledStart).getTime() + 7 * 24 * 60 * 60 * 1000,
+        ).toISOString();
+      }
+
       const payload = {
         title: testData.title || 'Untitled Test',
-        description: `Subject: ${testData.subject} ${testData.negativeMarking ? `| Negative Marking: -${testData.negativeMarks}` : ''}`,
+        description: `Subject: ${testData.subject}`,
+        subject: testData.subject,
         t_type: 'quiz',
         duration_minutes: parseInt(testData.duration, 10),
         total_marks: testData.totalMarks,
         status: status,
+        // Real columns now — grading applies the penalty server-side.
+        negative_marking: !!testData.negativeMarking,
+        negative_marks: testData.negativeMarking ? Number(testData.negativeMarks) || 0 : 0,
         question_ids: selectedQuestions.map(q => q.id),
         batch_ids: testData.targetBatches,
         scheduled_start: scheduledStart,
@@ -100,8 +116,11 @@ const TestConstructor = () => {
           await apiClient.patch(`/tests/${testId}`, {
             title: payload.title,
             description: payload.description,
+            subject: payload.subject,
             duration_minutes: payload.duration_minutes,
-            total_marks: payload.total_marks
+            total_marks: payload.total_marks,
+            negative_marking: payload.negative_marking,
+            negative_marks: payload.negative_marks
           });
           if (status === 'published' && existingTest.status === 'draft') {
             await apiClient.patch(`/tests/${testId}/publish`);

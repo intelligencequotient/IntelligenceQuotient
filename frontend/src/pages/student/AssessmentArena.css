@@ -394,3 +394,26 @@
 .btn-confirm-submit:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(239,68,68,0.4); }
 
 .auto-submit .modal-warning-icon { color: #6366f1; }
+
+/* ── Added: save errors, question images ─────────────────────────────────── */
+
+.arena-save-error {
+  margin: 0 24px 12px;
+  padding: 10px 16px;
+  border-radius: 8px;
+  background: rgba(220, 38, 38, 0.15);
+  color: #fca5a5;
+  border: 1px solid rgba(220, 38, 38, 0.4);
+  font-size: 0.87rem;
+}
+
+.arena-q-image {
+  display: block;
+  max-width: 100%;
+  max-height: 340px;
+  object-fit: contain;
+  margin: 14px 0;
+  padding: 8px;
+  background: #fff;
+  border-radius: 8px;
+}

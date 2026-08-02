@@ -20,6 +20,7 @@ API key:  GROQ_API_KEY environment variable (free at console.groq.com)
 """
 
 import argparse
+import base64
 import json
 import os
 import re
@@ -46,6 +47,13 @@ except ImportError:
 
 GROQ_URL        = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_TEXT_MODEL = "llama-3.3-70b-versatile"   # confirmed available on free tier
+# Vision fallback for questions PyMuPDF cannot read (scans, pure-diagram items).
+# Override with VISION_MODEL if the account has access to a different one.
+GROQ_VISION_MODEL = os.environ.get(
+    "VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct"
+)
+# Below this many characters, extracted text is treated as unusable.
+MIN_USABLE_TEXT_CHARS = 25
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -290,6 +298,97 @@ def call_groq(api_keys: list[str], prompt: str, max_retries: int = 15) -> str | 
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Groq vision API — fallback for questions PyMuPDF cannot read
+# ─────────────────────────────────────────────────────────────────────────────
+
+def call_groq_vision(api_keys: list[str], prompt: str, image_path: str,
+                     max_retries: int = 4) -> str | None:
+    """
+    Send a cropped question image to a Groq vision model.
+
+    Used when text extraction yields nothing usable — scanned pages, questions
+    that are entirely a diagram, or chemistry structures drawn as vectors. The
+    model transcribes what it can see and classifies in the same call, so one
+    request replaces the OCR step we do not have.
+
+    Returns the raw response, or None so the caller can fall back to keywords.
+    """
+    if not _HAS_REQUESTS or not api_keys or not os.path.exists(image_path):
+        return None
+
+    try:
+        with open(image_path, "rb") as fh:
+            encoded = base64.b64encode(fh.read()).decode("ascii")
+    except Exception as e:
+        print(f"    Vision: could not read {image_path}: {e}", file=sys.stderr)
+        return None
+
+    # Guard against oversized crops — the API rejects very large payloads and a
+    # single bad image should not stall the whole run.
+    if len(encoded) > 4 * 1024 * 1024:
+        print("    Vision: image too large, skipping.", file=sys.stderr)
+        return None
+
+    if not hasattr(call_groq_vision, "key_idx"):
+        call_groq_vision.key_idx = 0
+
+    for attempt in range(max_retries):
+        current_key = api_keys[call_groq_vision.key_idx]
+        payload = {
+            "model": GROQ_VISION_MODEL,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url",
+                     "image_url": {"url": f"data:image/png;base64,{encoded}"}},
+                ],
+            }],
+            "temperature": 0.0,
+            "max_tokens": 500,
+        }
+        try:
+            res = _requests.post(
+                GROQ_URL,
+                headers={"Authorization": f"Bearer {current_key}",
+                         "Content-Type": "application/json"},
+                json=payload,
+                timeout=60,          # vision is slower than text
+            )
+            res.raise_for_status()
+            return res.json()["choices"][0]["message"]["content"]
+        except _requests.HTTPError as e:
+            code = e.response.status_code if e.response is not None else 0
+            if code == 429 and len(api_keys) > 1:
+                call_groq_vision.key_idx = (call_groq_vision.key_idx + 1) % len(api_keys)
+                time.sleep(1.0)
+                continue
+            if code in (400, 404, 422):
+                # Model unavailable or payload rejected — retrying will not help.
+                print(f"\n    Vision unavailable (HTTP {code}); using keyword fallback.",
+                      end="", flush=True)
+                return None
+            time.sleep(min(30, 2 * (2 ** attempt)))
+        except Exception as e:
+            print(f"\n    Vision error: {e}", file=sys.stderr)
+            return None
+    return None
+
+
+def build_vision_prompt(exam_taxonomy: dict) -> str:
+    taxonomy_lines = [f"  {subj}: {', '.join(topics)}"
+                      for subj, topics in exam_taxonomy.items()]
+    return (
+        "This image is a single exam question.\n"
+        "Read it and reply with ONLY a JSON object, no prose:\n"
+        '{"subject": "...", "topic": "...", "confidence": 0.0, "text": "..."}\n\n'
+        '"text" must be your transcription of the question (max 300 chars).\n'
+        "Choose subject and topic strictly from this taxonomy:\n"
+        + "\n".join(taxonomy_lines)
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Classification prompt builder
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -413,14 +512,40 @@ def classify_question(entry: dict, output_dir: str, pdf_path: str | None,
     classification: dict | None = None
     method = "keyword"
 
-    # ── Groq classification ───────────────────────────────────────────────────
-    if use_api and groq_keys and question_text:
+    # ── Groq text classification ──────────────────────────────────────────────
+    if use_api and groq_keys and len(question_text) >= MIN_USABLE_TEXT_CHARS:
         prompt = build_classify_prompt(exam_taxonomy, question_text)
         raw = call_groq(groq_keys, prompt)
         classification = parse_classification(raw)
         if classification:
             classification["method"] = "groq-text"
             method = "groq-text"
+        time.sleep(delay)
+
+    # ── Vision fallback ───────────────────────────────────────────────────────
+    # Text extraction returns nothing usable for scanned pages and questions that
+    # are entirely a diagram. Send the cropped image to a vision model instead —
+    # it transcribes and classifies in one call.
+    needs_vision = (
+        use_api
+        and groq_keys
+        and classification is None
+        and len(question_text) < MIN_USABLE_TEXT_CHARS
+        and rel_path.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))
+    )
+
+    if needs_vision:
+        abs_image = os.path.join(output_dir, rel_path)
+        raw = call_groq_vision(groq_keys, build_vision_prompt(exam_taxonomy), abs_image)
+        vision_result = parse_classification(raw)
+        if vision_result:
+            classification = vision_result
+            classification["method"] = "groq-vision"
+            method = "groq-vision"
+            # Keep the transcription — it is often the only text this question has.
+            transcribed = str(vision_result.get("text") or "").strip()
+            if transcribed:
+                question_text = transcribed
         time.sleep(delay)
 
     # ── Keyword fallback ──────────────────────────────────────────────────────

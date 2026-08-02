@@ -1,7 +1,7 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAppData } from '../../context/AppDataContext';
-import { FileText, Plus, Search, Calendar, Clock, Edit } from 'lucide-react';
+import { FileText, Plus, Search, Calendar, Clock, Edit, BarChart3 } from 'lucide-react';
 import './TestLibrary.css';
 
 const TestLibrary = () => {
@@ -72,13 +72,25 @@ const TestLibrary = () => {
                       <span className="collab-badge" style={{color: '#6366f1', fontSize: '12px', fontWeight: '600'}}>Collaboration</span>
                     )}
                   </div>
-                  <button 
-                    className="btn-secondary" 
-                    onClick={() => navigate(`/teacher/test-constructor/${test.id}`)}
-                  >
-                    <Edit size={16} />
-                    <span>{test.created_by === user.id ? 'Edit Test' : 'Add Questions'}</span>
-                  </button>
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                    {/* Results only exist once a test has been published. */}
+                    {test.status === 'published' && (
+                      <button
+                        className="btn-secondary"
+                        onClick={() => navigate(`/teacher/test-results/${test.id}`)}
+                      >
+                        <BarChart3 size={16} />
+                        <span>Results</span>
+                      </button>
+                    )}
+                    <button
+                      className="btn-secondary"
+                      onClick={() => navigate(`/teacher/test-constructor/${test.id}`)}
+                    >
+                      <Edit size={16} />
+                      <span>{test.created_by === user.id ? 'Edit Test' : 'Add Questions'}</span>
+                    </button>
+                  </div>
                 </div>
               </div>
             ))

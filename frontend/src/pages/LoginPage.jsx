@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { BookOpen, GraduationCap, Eye, EyeOff } from 'lucide-react';
+import { Link, useNavigate } from 'react-router-dom';
+import { BookOpen, GraduationCap, Eye, EyeOff, Shield } from 'lucide-react';
 import './LoginPage.css';
 
 const LoginPage = () => {
@@ -22,6 +22,9 @@ const LoginPage = () => {
       { label: 'Dr. Marie Chem', email: 'chemistry_teacher@edu.com', password: 'teacher123' },
       { label: 'Dr. Euler Maths', email: 'maths_teacher@edu.com', password: 'teacher123' },
     ],
+    admin: [
+      { label: 'Super Admin', email: 'admin@edu.com', password: 'admin123' },
+    ],
   };
 
   const handleLogin = async (e) => {
@@ -34,13 +37,21 @@ const LoginPage = () => {
       const { apiClient } = await import('../api/client');
       const data = await apiClient.post('/auth/login', { email, password });
       
-      // Store token and user details
+      // Store tokens and user details. The refresh token lets apiClient renew a
+      // expired session silently instead of bouncing the user back to login.
       localStorage.setItem('access_token', data.accessToken);
+      if (data.refreshToken) localStorage.setItem('refresh_token', data.refreshToken);
       localStorage.setItem('user', JSON.stringify(data.user));
       
       // Navigate based on actual role from database
       // Force full reload so AppDataContext fetches initial data
-      window.location.href = (data.user.role === 'teacher' || data.user.role === 'admin' ? '/teacher' : '/student');
+      if (data.user.role === 'admin') {
+        window.location.href = '/admin';
+      } else if (data.user.role === 'teacher') {
+        window.location.href = '/teacher';
+      } else {
+        window.location.href = '/student';
+      }
     } catch (err) {
       setError(err.message || 'Invalid email or password. Please try again.');
     } finally {
@@ -118,6 +129,14 @@ const LoginPage = () => {
               <BookOpen size={20} />
               Teacher
             </button>
+            <button
+              className={`role-btn ${role === 'admin' ? 'active' : ''}`}
+              onClick={() => setRole('admin')}
+              style={role === 'admin' ? { background: 'linear-gradient(135deg,#7c3aed,#4f46e5)', color: 'white', borderColor: '#7c3aed' } : {}}
+            >
+              <Shield size={20} />
+              Admin
+            </button>
           </div>
 
           <form onSubmit={handleLogin} className="login-form">
@@ -125,7 +144,7 @@ const LoginPage = () => {
               <label>Email Address</label>
               <input
                 type="email"
-                placeholder={`e.g. ${MOCK_CREDENTIALS[role][0].email}`}
+                placeholder={`e.g. ${(MOCK_CREDENTIALS[role] || MOCK_CREDENTIALS.student)[0].email}`}
                 value={email}
                 onChange={e => setEmail(e.target.value)}
                 required
@@ -150,18 +169,25 @@ const LoginPage = () => {
 
             {error && <div className="error-msg">{error}</div>}
 
-            <button type="submit" className="login-btn" disabled={loading}>
-              {loading ? <span className="spinner"></span> : `Sign In as ${role === 'student' ? 'Student' : 'Teacher'}`}
+            <button type="submit" className="login-btn" disabled={loading} style={role === 'admin' ? { background: 'linear-gradient(135deg,#7c3aed,#4f46e5)' } : {}}>
+              {loading ? <span className="spinner"></span> : `Sign In as ${role === 'student' ? 'Student' : role === 'teacher' ? 'Teacher' : 'Admin'}`}
             </button>
+
+            <Link
+              to="/forgot-password"
+              style={{ display: 'block', textAlign: 'center', marginTop: '14px', fontSize: '0.87rem', color: '#64748b', textDecoration: 'none' }}
+            >
+              Forgot your password?
+            </Link>
           </form>
 
           {/* Demo Credentials */}
           <div className="demo-creds">
             <p>Demo credentials for <strong>{role}</strong>:</p>
-            {MOCK_CREDENTIALS[role].map((cred, i) => (
+            {(MOCK_CREDENTIALS[role] || []).map((cred, i) => (
               <div key={i} className="demo-cred-row" style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'6px',flexWrap:'wrap'}}>
                 <code style={{flex:1,minWidth:0,fontSize:'0.8rem'}}>{cred.label} — {cred.email} / {cred.password}</code>
-                <button className="autofill-btn" onClick={() => {
+                <button className="autofill-btn" style={role === 'admin' ? { background: 'linear-gradient(135deg,#7c3aed,#4f46e5)', color: 'white' } : {}} onClick={() => {
                   setEmail(cred.email);
                   setPassword(cred.password);
                 }}>

@@ -1,65 +1,210 @@
-import React, { useState, useMemo } from 'react';
-import { Search, Plus, Filter, Edit, Copy, Trash2, X, Image as ImageIcon } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import {
+  Search, Plus, Edit, Copy, Trash2, X, Image as ImageIcon,
+  ChevronLeft, ChevronRight, Loader2,
+} from 'lucide-react';
+import { apiClient } from '../../api/client';
 import { useAppData } from '../../context/AppDataContext';
+import MathText from '../../components/MathText';
 import './QuestionBank.css';
 
+const SUBJECTS = ['Mathematics', 'Physics', 'Chemistry', 'Biology'];
+const DIFFICULTIES = ['easy', 'medium', 'hard'];
+const PAGE_SIZE = 20;
+
+const emptyQuestion = () => ({
+  subject: 'Mathematics',
+  topic: '',
+  q_type: 'single_correct',
+  difficulty: 'medium',
+  question_text: '',
+  options: ['', '', '', ''],
+  correctIndex: 0,
+  marks: 4,
+  solution: '',
+});
+
+/**
+ * Question Bank.
+ *
+ * Previously every action here mutated React state only, so an "added" or
+ * "deleted" question reappeared on refresh. Everything now goes through the API,
+ * and paging happens server-side so the page stays responsive with a large bank.
+ */
 const QuestionBank = () => {
-  const { questions, setQuestions } = useAppData();
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [subjectFilter, setSubjectFilter] = useState('All');
-  const [difficultyFilter, setDifficultyFilter] = useState('All');
+  const { setQuestions: setGlobalQuestions } = useAppData();
+
+  const [rows, setRows] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [loading, setLoading] = useState(true);
+
+  const [searchInput, setSearchInput] = useState('');
+  const [search, setSearch] = useState('');
+  const [subjectFilter, setSubjectFilter] = useState('');
+  const [difficultyFilter, setDifficultyFilter] = useState('');
+
+  const [selected, setSelected] = useState([]);
   const [toast, setToast] = useState('');
   const [enlargedImage, setEnlargedImage] = useState(null);
+  const [busy, setBusy] = useState(false);
 
-  // Modal State
-  const [newQuestion, setNewQuestion] = useState({
-    subject: 'Mathematics', type: 'Single Choice', difficulty: 'Easy', text: '',
-    options: ['', '', '', ''], correct: 0
-  });
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [draft, setDraft] = useState(emptyQuestion());
 
   const showToast = (msg) => {
     setToast(msg);
     setTimeout(() => setToast(''), 3000);
   };
 
-  const handleDelete = (id) => {
-    if(window.confirm('Are you sure you want to delete this question?')) {
-      setQuestions(questions.filter(q => q.id !== id));
-      showToast('Question deleted successfully.');
+  // Debounce the search box so typing does not fire a request per keystroke.
+  const debounceRef = useRef(null);
+  useEffect(() => {
+    clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      setSearch(searchInput);
+      setPage(1);
+    }, 350);
+    return () => clearTimeout(debounceRef.current);
+  }, [searchInput]);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE) });
+      if (search) params.set('search', search);
+      if (subjectFilter) params.set('subject', subjectFilter);
+      if (difficultyFilter) params.set('difficulty', difficultyFilter);
+
+      const res = await apiClient.get(`/questions?${params}`);
+      setRows(res.data || []);
+      setTotal(res.total || 0);
+      setSelected([]);
+    } catch (e) {
+      showToast(e.message || 'Failed to load questions');
+      setRows([]);
+    } finally {
+      setLoading(false);
     }
+  }, [page, search, subjectFilter, difficultyFilter]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+
+  // ── Mutations ─────────────────────────────────────────────────────────────
+
+  const openCreate = () => {
+    setEditingId(null);
+    setDraft(emptyQuestion());
+    setModalOpen(true);
   };
 
-  const handleDuplicate = (q) => {
-    const duplicated = { ...q, id: Date.now().toString(), usedIn: 0 };
-    setQuestions([duplicated, ...questions]);
-    showToast('Question duplicated.');
-  };
-
-  const handleSaveNewQuestion = () => {
-    if (!newQuestion.text.trim()) {
-      showToast("Please enter question content.");
-      return;
-    }
-    const qToAdd = {
-      ...newQuestion,
-      id: Date.now().toString(),
-      lastUsed: 'Just now',
-    };
-    setQuestions([qToAdd, ...questions]);
-    setIsModalOpen(false);
-    setNewQuestion({ subject: 'Mathematics', type: 'Single Choice', difficulty: 'Easy', text: '', options: ['', '', '', ''], correct: 0 });
-    showToast('Question added successfully!');
-  };
-
-  const filteredQuestions = useMemo(() => {
-    return questions.filter(q => {
-      const matchSearch = (q.question_text || q.text || '').toLowerCase().includes(searchQuery.toLowerCase());
-      const matchSubj = subjectFilter === 'All' || (q.subject || '').toLowerCase() === subjectFilter.toLowerCase();
-      const matchDiff = difficultyFilter === 'All' || (q.difficulty || '').toLowerCase() === difficultyFilter.toLowerCase();
-      return matchSearch && matchSubj && matchDiff;
+  const openEdit = (q) => {
+    setEditingId(q.id);
+    setDraft({
+      subject: q.subject || 'Mathematics',
+      topic: q.topic || '',
+      q_type: q.q_type || 'single_correct',
+      difficulty: (q.difficulty || 'medium').toLowerCase(),
+      question_text: q.question_text || '',
+      options: Array.isArray(q.options) && q.options.length === 4 ? [...q.options] : ['', '', '', ''],
+      correctIndex: q.correct_answer?.index ?? 0,
+      marks: q.marks ?? 4,
+      solution: q.solution || '',
     });
-  }, [questions, searchQuery, subjectFilter, difficultyFilter]);
+    setModalOpen(true);
+  };
+
+  const handleSave = async () => {
+    if (!draft.question_text.trim()) return showToast('Please enter the question text.');
+
+    const payload = {
+      subject: draft.subject,
+      topic: draft.topic.trim() || null,
+      q_type: draft.q_type,
+      difficulty: draft.difficulty,
+      question_text: draft.question_text.trim(),
+      options: draft.options,
+      correct_answer: { index: Number(draft.correctIndex) },
+      marks: Number(draft.marks) || 4,
+    };
+
+    setBusy(true);
+    try {
+      if (editingId) {
+        await apiClient.patch(`/questions/${editingId}`, payload);
+        showToast('Question updated.');
+      } else {
+        await apiClient.post('/questions', payload);
+        showToast('Question added.');
+      }
+      setModalOpen(false);
+      load();
+    } catch (e) {
+      showToast(e.message || 'Save failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDelete = async (q) => {
+    if (!window.confirm('Delete this question? It will be removed from the bank.')) return;
+    setBusy(true);
+    try {
+      await apiClient.delete(`/questions/${q.id}`);
+      showToast('Question deleted.');
+      load();
+    } catch (e) {
+      showToast(e.message || 'Delete failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDuplicate = async (q) => {
+    setBusy(true);
+    try {
+      await apiClient.post(`/questions/${q.id}/duplicate`, {});
+      showToast('Question duplicated.');
+      load();
+    } catch (e) {
+      showToast(e.message || 'Duplicate failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    if (!selected.length) return;
+    if (!window.confirm(`Delete ${selected.length} selected question(s)?`)) return;
+    setBusy(true);
+    try {
+      const res = await apiClient.post('/questions/bulk-delete', { ids: selected });
+      showToast(`Deleted ${res.deleted} question(s).`);
+      load();
+    } catch (e) {
+      showToast(e.message || 'Bulk delete failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Keep the shared context roughly in sync for pages that still read from it.
+  useEffect(() => { if (rows.length) setGlobalQuestions(rows); }, [rows, setGlobalQuestions]);
+
+  const toggleRow = (id) =>
+    setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+
+  const allSelected = rows.length > 0 && selected.length === rows.length;
+
+  const answerLabel = (q) => {
+    if (q.correct_answer?.value !== undefined) return String(q.correct_answer.value);
+    const idx = q.correct_answer?.index;
+    if (idx === undefined || !Array.isArray(q.options)) return 'N/A';
+    return q.options[idx] ?? `Option ${['A', 'B', 'C', 'D'][idx] ?? idx}`;
+  };
 
   return (
     <div className="question-bank">
@@ -68,7 +213,7 @@ const QuestionBank = () => {
           <h1>Question Bank</h1>
           <p>Manage and organize your assessment items.</p>
         </div>
-        <button className="btn-primary" onClick={() => setIsModalOpen(true)}>
+        <button className="btn-primary" onClick={openCreate}>
           <Plus size={18} /> Add New Question
         </button>
       </header>
@@ -78,34 +223,57 @@ const QuestionBank = () => {
       <div className="bank-controls">
         <div className="search-bar">
           <Search size={20} className="search-icon" />
-          <input 
-            type="text" 
-            placeholder="Search questions..." 
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+          <input
+            type="text"
+            placeholder="Search questions..."
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
           />
         </div>
         <div className="filters">
-          <select className="filter-select" value={subjectFilter} onChange={(e) => setSubjectFilter(e.target.value)}>
-            <option value="All">All Subjects</option>
-            <option value="Mathematics">Mathematics</option>
-            <option value="Physics">Physics</option>
-            <option value="Chemistry">Chemistry</option>
-            <option value="Biology">Biology</option>
+          <select
+            className="filter-select"
+            value={subjectFilter}
+            onChange={(e) => { setSubjectFilter(e.target.value); setPage(1); }}
+          >
+            <option value="">All Subjects</option>
+            {SUBJECTS.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
-          <select className="filter-select" value={difficultyFilter} onChange={(e) => setDifficultyFilter(e.target.value)}>
-            <option value="All">All Difficulties</option>
-            <option value="Easy">Easy</option>
-            <option value="Medium">Medium</option>
-            <option value="Hard">Hard</option>
+          <select
+            className="filter-select"
+            value={difficultyFilter}
+            onChange={(e) => { setDifficultyFilter(e.target.value); setPage(1); }}
+          >
+            <option value="">All Difficulties</option>
+            {DIFFICULTIES.map((d) => (
+              <option key={d} value={d}>{d[0].toUpperCase() + d.slice(1)}</option>
+            ))}
           </select>
         </div>
       </div>
+
+      {selected.length > 0 && (
+        <div className="qb-bulk-bar">
+          <span>{selected.length} selected</span>
+          <button className="qb-bulk-danger" onClick={handleBulkDelete} disabled={busy}>
+            <Trash2 size={15} /> Delete selected
+          </button>
+          <button className="qb-bulk-ghost" onClick={() => setSelected([])}>Clear</button>
+        </div>
+      )}
 
       <div className="table-container">
         <table className="bank-table">
           <thead>
             <tr>
+              <th className="qb-check-col">
+                <input
+                  type="checkbox"
+                  checked={allSelected}
+                  onChange={(e) => setSelected(e.target.checked ? rows.map((q) => q.id) : [])}
+                  aria-label="Select all questions on this page"
+                />
+              </th>
               <th className="preview-col">Question Preview</th>
               <th>Subject</th>
               <th>Topic</th>
@@ -116,83 +284,140 @@ const QuestionBank = () => {
             </tr>
           </thead>
           <tbody>
-            {filteredQuestions.length === 0 && (
+            {loading && (
               <tr>
-                <td colSpan="7" style={{textAlign: 'center', padding: '24px', color: 'var(--text-secondary)'}}>No questions match your filters.</td>
+                <td colSpan="8" className="qb-state">
+                  <Loader2 size={18} className="qb-spin" /> Loading questions…
+                </td>
               </tr>
             )}
-            {filteredQuestions.map(q => (
-              <tr key={q.id}>
+
+            {!loading && rows.length === 0 && (
+              <tr>
+                <td colSpan="8" className="qb-state">No questions match your filters.</td>
+              </tr>
+            )}
+
+            {!loading && rows.map((q) => (
+              <tr key={q.id} className={selected.includes(q.id) ? 'qb-row-selected' : ''}>
+                <td className="qb-check-col">
+                  <input
+                    type="checkbox"
+                    checked={selected.includes(q.id)}
+                    onChange={() => toggleRow(q.id)}
+                    aria-label="Select question"
+                  />
+                </td>
                 <td className="preview-col">
                   {q.image_url ? (
-                    <img 
-                      src={q.image_url} 
-                      alt="Question Preview" 
+                    <img
+                      src={q.image_url}
+                      alt="Question preview"
+                      loading="lazy"
                       onClick={() => setEnlargedImage(q.image_url)}
-                      style={{ width: '100%', maxWidth: '500px', maxHeight: '350px', objectFit: 'contain', display: 'block', margin: '8px 0', borderRadius: '6px', border: '1px solid #e2e8f0', backgroundColor: '#fff', padding: '4px', cursor: 'zoom-in' }} 
+                      className="qb-thumb"
                     />
                   ) : (
-                    <p className="q-preview-text" style={{ fontSize: '0.85rem', maxWidth: '400px' }}>{q.question_text || q.text || 'No content provided.'}</p>
+                    <MathText
+                      as="p"
+                      className="q-preview-text"
+                      text={q.question_text || 'No content provided.'}
+                    />
                   )}
                 </td>
                 <td>{q.subject}</td>
                 <td>{q.topic || 'General'}</td>
-                <td>{q.q_type || q.type}</td>
-                <td><span className={`diff-badge ${(q.difficulty || 'medium').toLowerCase()}`}>{q.difficulty || 'Medium'}</span></td>
+                <td>{q.q_type || '—'}</td>
                 <td>
-                  <strong style={{ color: 'var(--primary-color)' }}>
-                    {q.correct_answer?.value 
-                      ? q.correct_answer.value 
-                      : (q.correct_answer?.index !== undefined && q.options 
-                          ? q.options[q.correct_answer.index] 
-                          : 'N/A')}
-                  </strong>
+                  <span className={`diff-badge ${(q.difficulty || 'medium').toLowerCase()}`}>
+                    {q.difficulty || 'medium'}
+                  </span>
                 </td>
+                <td><strong className="qb-answer"><MathText text={answerLabel(q)} /></strong></td>
                 <td className="actions-col">
                   <div className="row-actions">
-                    <button className="action-btn" title="Edit" onClick={() => showToast('Edit modal would open here.')}><Edit size={16} /></button>
-                    <button className="action-btn" title="Duplicate" onClick={() => handleDuplicate(q)}><Copy size={16} /></button>
-                    <button className="action-btn danger" title="Delete" onClick={() => handleDelete(q.id)}><Trash2 size={16} /></button>
+                    <button className="action-btn" title="Edit" onClick={() => openEdit(q)}>
+                      <Edit size={16} />
+                    </button>
+                    <button className="action-btn" title="Duplicate" disabled={busy} onClick={() => handleDuplicate(q)}>
+                      <Copy size={16} />
+                    </button>
+                    <button className="action-btn danger" title="Delete" disabled={busy} onClick={() => handleDelete(q)}>
+                      <Trash2 size={16} />
+                    </button>
                   </div>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
+
         <div className="table-footer">
-          <span>Showing {filteredQuestions.length} results</span>
+          <span>
+            {total === 0
+              ? 'No results'
+              : `Showing ${(page - 1) * PAGE_SIZE + 1}–${Math.min(page * PAGE_SIZE, total)} of ${total}`}
+          </span>
           <div className="pagination">
-            <button className="page-btn disabled">&lt;</button>
-            <button className="page-btn disabled">&gt;</button>
+            <button
+              className={`page-btn ${page <= 1 ? 'disabled' : ''}`}
+              disabled={page <= 1}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+            >
+              <ChevronLeft size={15} />
+            </button>
+            <span className="qb-page-label">{page} / {totalPages}</span>
+            <button
+              className={`page-btn ${page >= totalPages ? 'disabled' : ''}`}
+              disabled={page >= totalPages}
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+            >
+              <ChevronRight size={15} />
+            </button>
           </div>
         </div>
       </div>
 
-      {isModalOpen && (
+      {modalOpen && (
         <div className="modal-overlay">
           <div className="modal-content large">
             <div className="modal-header">
-              <h2>Add New Question</h2>
-              <button className="close-btn" onClick={() => setIsModalOpen(false)}><X size={20} /></button>
+              <h2>{editingId ? 'Edit Question' : 'Add New Question'}</h2>
+              <button className="close-btn" onClick={() => setModalOpen(false)}><X size={20} /></button>
             </div>
-            
+
             <div className="modal-body">
               <div className="form-row">
                 <div className="form-group flex-1">
                   <label>Subject</label>
-                  <select value={newQuestion.subject} onChange={e => setNewQuestion({...newQuestion, subject: e.target.value})}>
-                    <option>Mathematics</option><option>Physics</option><option>Chemistry</option><option>Biology</option>
+                  <select value={draft.subject} onChange={(e) => setDraft({ ...draft, subject: e.target.value })}>
+                    {SUBJECTS.map((s) => <option key={s}>{s}</option>)}
                   </select>
                 </div>
                 <div className="form-group flex-1">
-                  <label>Type</label>
-                  <input type="text" value={newQuestion.type} onChange={e => setNewQuestion({...newQuestion, type: e.target.value})} />
+                  <label>Topic</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Kinematics"
+                    value={draft.topic}
+                    onChange={(e) => setDraft({ ...draft, topic: e.target.value })}
+                  />
                 </div>
                 <div className="form-group flex-1">
                   <label>Difficulty</label>
-                  <select value={newQuestion.difficulty} onChange={e => setNewQuestion({...newQuestion, difficulty: e.target.value})}>
-                    <option>Easy</option><option>Medium</option><option>Hard</option>
+                  <select value={draft.difficulty} onChange={(e) => setDraft({ ...draft, difficulty: e.target.value })}>
+                    {DIFFICULTIES.map((d) => (
+                      <option key={d} value={d}>{d[0].toUpperCase() + d.slice(1)}</option>
+                    ))}
                   </select>
+                </div>
+                <div className="form-group flex-1">
+                  <label>Marks</label>
+                  <input
+                    type="number" min={1} max={20}
+                    value={draft.marks}
+                    onChange={(e) => setDraft({ ...draft, marks: e.target.value })}
+                  />
                 </div>
               </div>
 
@@ -200,75 +425,68 @@ const QuestionBank = () => {
                 <label>Question Content</label>
                 <div className="rich-editor">
                   <div className="editor-toolbar">
-                    <button type="button"><b>B</b></button>
-                    <button type="button"><i>I</i></button>
-                    <button type="button"><u>U</u></button>
-                    <span className="divider"></span>
-                    <button type="button"><ImageIcon size={16} /> Add Image</button>
+                    <span className="qb-latex-hint">
+                      <ImageIcon size={14} /> LaTeX supported — wrap maths in $…$ or $$…$$
+                    </span>
                   </div>
-                  <textarea className="editor-textarea" placeholder="Type your question here..." value={newQuestion.text} onChange={e => setNewQuestion({...newQuestion, text: e.target.value})}></textarea>
+                  <textarea
+                    className="editor-textarea"
+                    placeholder="Type your question here. e.g. Find $\int_0^1 x^2\,dx$"
+                    value={draft.question_text}
+                    onChange={(e) => setDraft({ ...draft, question_text: e.target.value })}
+                  />
                 </div>
+                {draft.question_text && (
+                  <div className="qb-preview">
+                    <span className="qb-preview-label">Preview</span>
+                    <MathText text={draft.question_text} />
+                  </div>
+                )}
               </div>
 
               <div className="options-section">
-                <label>Options (Mark correct answer)</label>
+                <label>Options (mark the correct answer)</label>
                 {['A', 'B', 'C', 'D'].map((opt, idx) => (
                   <div key={opt} className="option-row">
-                    <input 
-                      type="radio" 
-                      name="correct-opt" 
-                      className="correct-radio" 
-                      checked={newQuestion.correct === idx}
-                      onChange={() => setNewQuestion({...newQuestion, correct: idx})}
+                    <input
+                      type="radio"
+                      name="correct-opt"
+                      className="correct-radio"
+                      checked={Number(draft.correctIndex) === idx}
+                      onChange={() => setDraft({ ...draft, correctIndex: idx })}
                     />
                     <span className="opt-label">{opt}</span>
-                    <input 
-                      type="text" 
-                      className="opt-input" 
-                      placeholder={`Option ${opt}`} 
-                      value={newQuestion.options[idx]}
+                    <input
+                      type="text"
+                      className="opt-input"
+                      placeholder={`Option ${opt}`}
+                      value={draft.options[idx]}
                       onChange={(e) => {
-                        const updatedOptions = [...newQuestion.options];
-                        updatedOptions[idx] = e.target.value;
-                        setNewQuestion({...newQuestion, options: updatedOptions});
+                        const options = [...draft.options];
+                        options[idx] = e.target.value;
+                        setDraft({ ...draft, options });
                       }}
                     />
                   </div>
                 ))}
               </div>
-
-              <div className="form-group mt-3">
-                <label>Solution / Explanation (Optional)</label>
-                <textarea className="solution-textarea" placeholder="Explain the correct answer..."></textarea>
-              </div>
             </div>
 
             <div className="modal-footer">
-              <button className="btn-outline" onClick={() => setIsModalOpen(false)}>Cancel</button>
-              <button className="btn-primary" onClick={handleSaveNewQuestion}>Save Question</button>
+              <button className="btn-outline" onClick={() => setModalOpen(false)}>Cancel</button>
+              <button className="btn-primary" onClick={handleSave} disabled={busy}>
+                {busy ? 'Saving…' : editingId ? 'Save Changes' : 'Save Question'}
+              </button>
             </div>
           </div>
         </div>
       )}
 
       {enlargedImage && (
-        <div 
-          className="modal-overlay" 
-          style={{ zIndex: 9999, backgroundColor: 'rgba(0,0,0,0.85)', cursor: 'zoom-out', display: 'flex', alignItems: 'center', justifyContent: 'center' }} 
-          onClick={() => setEnlargedImage(null)}
-        >
-          <img 
-            src={enlargedImage} 
-            alt="Enlarged Question" 
-            style={{ maxWidth: '90vw', maxHeight: '90vh', objectFit: 'contain', backgroundColor: 'white', padding: '16px', borderRadius: '8px' }} 
-            onClick={(e) => e.stopPropagation()} // Prevent closing if clicking the actual image container
-          />
-          <button 
-            className="close-btn" 
-            style={{ position: 'absolute', top: '24px', right: '32px', color: 'white', background: 'transparent', border: 'none', cursor: 'pointer' }}
-            onClick={() => setEnlargedImage(null)}
-          >
-            <X size={36} />
+        <div className="qb-lightbox" onClick={() => setEnlargedImage(null)}>
+          <img src={enlargedImage} alt="Enlarged question" onClick={(e) => e.stopPropagation()} />
+          <button className="qb-lightbox-close" onClick={() => setEnlargedImage(null)}>
+            <X size={34} />
           </button>
         </div>
       )}

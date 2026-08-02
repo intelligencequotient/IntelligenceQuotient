@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
-import { apiClient } from '../api/client';
+import { apiClient, captureTokenFromUrl, getToken } from '../api/client';
 import ViolationMonitor from '../components/ViolationMonitor';
 import ExamHeader from '../components/ExamHeader';
 import QuestionPanel from '../components/QuestionPanel';
@@ -24,12 +24,21 @@ const ExamShell = () => {
   const [violationWarning, setViolationWarning] = useState(null);
   const [isTerminated, setIsTerminated] = useState(false);
   const [isSubmitted, setIsSubmitted] = useState(false);
-  
+  const [result, setResult] = useState(null);
+  const [fatalError, setFatalError] = useState('');
+
   const heartbeatRef = useRef(null);
+  const submittingRef = useRef(false);
+  const questionEnteredAt = useRef(Date.now());
   const [lockAcquired, setLockAcquired] = useState(false);
   const [activeSubject, setActiveSubject] = useState('Physics');
   const [activeSection, setActiveSection] = useState('A');
   const [hasStarted, setHasStarted] = useState(false);
+
+  // Lift the access token out of the URL fragment before anything else runs.
+  useEffect(() => {
+    captureTokenFromUrl();
+  }, []);
 
   useEffect(() => {
     // For local mock preview, skip lock to allow easier testing
@@ -66,55 +75,76 @@ const ExamShell = () => {
     setHasStarted(true);
 
     try {
-      if (sessionId === 'jee-main-preview') {
+      // Offline demo papers, for showing the proctoring UI without a real test.
+      if (sessionId === 'jee-main-preview' || sessionId === 'jee-adv-preview') {
+        const isMain = sessionId === 'jee-main-preview';
         setExamData({
-          realSessionId: 'mock-session-main',
-          title: 'JEE Main Mock Test (Preview)',
+          realSessionId: isMain ? 'mock-session-main' : 'mock-session-adv',
+          title: `JEE ${isMain ? 'Main' : 'Advanced'} Mock Test (Preview)`,
           duration_minutes: 180,
-          total_questions: 75,
-          examType: 'main'
+          total_questions: isMain ? 75 : 51,
+          examType: isMain ? 'main' : 'advanced',
+          isPreview: true,
         });
-        setQuestions(jeeMainMockQuestions);
-        setTimeLeft(180 * 60);
-        setLoading(false);
-        return;
-      }
-      if (sessionId === 'jee-adv-preview') {
-        setExamData({
-          realSessionId: 'mock-session-adv',
-          title: 'JEE Advanced Mock Test (Preview)',
-          duration_minutes: 180,
-          total_questions: 51,
-          examType: 'advanced'
-        });
-        setQuestions(jeeAdvMockQuestions);
+        setQuestions(isMain ? jeeMainMockQuestions : jeeAdvMockQuestions);
         setTimeLeft(180 * 60);
         setLoading(false);
         return;
       }
 
-      const startRes = await apiClient.post(`/exam/${sessionId}/start`, { studentId: 'mock-student-id' });
+      // Real exam. The token arrives in the URL fragment from the portal.
+      if (!getToken()) {
+        setFatalError('No active session. Please launch this exam from your dashboard.');
+        setLoading(false);
+        return;
+      }
+
+      // `sessionId` in the route is the test id at this point; the server
+      // creates or resumes the session and returns its real id.
+      const startRes = await apiClient.post(`/exam/${sessionId}/start`);
       const realSessionId = startRes.sessionId;
-      setExamData({ ...startRes.testDetails, realSessionId });
 
-      // Normal flow...
-      setQuestions(jeeMainMockQuestions.slice(0, 3)); // Fallback if no questions endpoint yet
+      setExamData({
+        ...startRes.testDetails,
+        realSessionId,
+        examType: 'main',
+        isPreview: false,
+      });
+
+      // The real paper, with no answer key attached.
+      const paper = await apiClient.get(`/exam/session/${realSessionId}/questions`);
+      setQuestions(paper || []);
+
+      // Rehydrate a resumed session.
+      if (startRes.savedResponses?.length && paper?.length) {
+        const indexByQuestionId = new Map(paper.map((q, idx) => [q.id, idx]));
+        const restored = {};
+        for (const saved of startRes.savedResponses) {
+          const idx = indexByQuestionId.get(saved.question_id);
+          if (idx !== undefined) {
+            restored[idx] = { ...(saved.selected_answer || {}), status: saved.status };
+          }
+        }
+        setResponses(restored);
+      }
 
       const updateHeartbeat = async () => {
         try {
           const hb = await apiClient.get(`/exam/session/${realSessionId}/heartbeat`);
           setTimeLeft(hb.remainingSeconds);
-          if (hb.status === 'auto_submitted') {
-            setIsSubmitted(true);
+          if (hb.status !== 'in_progress') {
             clearInterval(heartbeatRef.current);
+            setIsSubmitted(true);
           }
-        } catch (e) { console.error("Heartbeat failed", e); }
+        } catch (e) {
+          console.error('Heartbeat failed', e);
+        }
       };
 
-      updateHeartbeat();
+      await updateHeartbeat();
       heartbeatRef.current = setInterval(updateHeartbeat, 5000);
     } catch (err) {
-      alert(err.message || 'Error initializing exam');
+      setFatalError(err.message || 'Error initializing exam');
     } finally {
       setLoading(false);
     }
@@ -123,6 +153,11 @@ const ExamShell = () => {
   useEffect(() => {
     return () => clearInterval(heartbeatRef.current);
   }, []);
+
+  // Restart the per-question stopwatch whenever the student moves.
+  useEffect(() => {
+    questionEnteredAt.current = Date.now();
+  }, [currentQ]);
 
   // Bug #6 fix: single interval, no dependency on timeLeft
   useEffect(() => {
@@ -149,31 +184,43 @@ const ExamShell = () => {
       ...prev,
       [currentQ]: responsePayload ? { ...responsePayload, status } : { status }
     }));
-    if (sessionId === 'jee-main-preview' || sessionId === 'jee-adv-preview') return; // Skip API call for preview
-
+    if (examData?.isPreview) return; // Nothing to persist for a demo paper.
     if (!examData?.realSessionId) return;
+
     try {
       await apiClient.post(`/exam/session/${examData.realSessionId}/response`, {
         question_id: questionId,
         selected_answer: responsePayload,
         status: status,
-        time_spent_seconds: 15
+        // Real elapsed time for this question since it was opened.
+        time_spent_seconds: Math.max(0, Math.round((Date.now() - questionEnteredAt.current) / 1000)),
       });
-    } catch (e) { console.error("Failed to save response"); }
+    } catch (e) {
+      console.error('Failed to save response', e);
+    }
   };
 
   const handleFinalSubmit = async (auto = false) => {
+    if (submittingRef.current) return;
+    submittingRef.current = true;
     clearInterval(heartbeatRef.current);
-    if (sessionId === 'jee-main-preview' || sessionId === 'jee-adv-preview') {
+
+    if (examData?.isPreview) {
       setIsSubmitted(true);
       return;
     }
-    
+
     try {
-      await apiClient.post(`/exam/session/${examData.realSessionId}/submit`, { autoSubmitted: auto });
+      // The server grades against the stored answer key and returns the score.
+      const summary = await apiClient.post(
+        `/exam/session/${examData.realSessionId}/submit`,
+        { autoSubmitted: auto },
+      );
+      setResult(summary);
       setIsSubmitted(true);
     } catch (e) {
-      alert("Error submitting: " + e.message);
+      submittingRef.current = false;
+      alert('Error submitting: ' + e.message);
     }
   };
 
@@ -184,6 +231,17 @@ const ExamShell = () => {
   }, []);
 
   if (!lockAcquired) return null;
+
+  if (fatalError) {
+    return (
+      <div className="exam-terminated error">
+        <h2>Cannot start this exam</h2>
+        <p>{fatalError}</p>
+        <button onClick={() => window.close()}>Close Tab</button>
+      </div>
+    );
+  }
+
   if (!hasStarted) {
     return (
       <div className="exam-terminated">
@@ -194,7 +252,28 @@ const ExamShell = () => {
     );
   }
   if (loading) return <div className="exam-loading">Loading secure environment...</div>;
-  if (isSubmitted) return <div className="exam-terminated"><h2>Exam Submitted</h2><button onClick={() => window.close()}>Close Tab</button></div>;
+  if (isSubmitted) {
+    return (
+      <div className="exam-terminated">
+        <h2>Exam Submitted</h2>
+        {result ? (
+          <div className="exam-result-summary">
+            <p className="exam-result-score">
+              <strong>{result.score}</strong> / {result.maxScore}
+            </p>
+            <p>
+              {result.correct} correct · {result.incorrect} incorrect · {result.unattempted} unattempted
+            </p>
+            <p>Accuracy: {result.accuracy}%</p>
+            {result.autoSubmitted && <p className="exam-result-note">Submitted automatically — time expired.</p>}
+          </div>
+        ) : (
+          <p>Your responses have been recorded.</p>
+        )}
+        <button onClick={() => window.close()}>Close Tab</button>
+      </div>
+    );
+  }
   if (isTerminated) return <div className="exam-terminated error"><h2>Exam Terminated</h2><p>Rule violations exceeded limit.</p><button onClick={() => window.close()}>Close Tab</button></div>;
 
   return (

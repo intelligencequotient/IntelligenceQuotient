@@ -274,3 +274,38 @@
   color: var(--text-primary);
 }
 .btn-outline:hover { background-color: var(--bg-color); }
+
+/* ── Added: real API wiring — roster, add-student, edit/delete ────────────── */
+
+.bm-muted { color: var(--text-secondary, #64748b); }
+.bm-small { font-size: 0.78rem; }
+.bm-toast-error { background: #dc2626 !important; }
+
+.bm-card-actions { display: flex; gap: 4px; }
+.bm-danger:hover { color: #dc2626; }
+
+.batch-status-badge.active .dot { background: #10b981; }
+
+.bm-add-row { display: flex; gap: 8px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
+.bm-add-row select {
+  flex: 1; min-width: 160px; padding: 7px 10px; border-radius: 7px; font-size: 0.84rem;
+  border: 1px solid var(--border-color, #e2e8f0);
+  background: var(--input-bg, #fff); color: var(--text-primary, #1e293b);
+}
+
+.bm-sm { padding: 7px 14px !important; font-size: 0.82rem !important; }
+
+.bm-ghost {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 14px; border-radius: 7px; cursor: pointer; font-weight: 600; font-size: 0.83rem;
+  background: transparent; color: var(--text-secondary, #64748b);
+  border: 1px solid var(--border-color, #e2e8f0);
+}
+.bm-ghost:disabled { opacity: 0.5; cursor: not-allowed; }
+.bm-add-btn { margin-top: 12px; }
+
+.bm-empty {
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  padding: 52px 20px; text-align: center; color: var(--text-secondary, #94a3b8);
+  border: 1px dashed var(--border-color, #e2e8f0); border-radius: 12px;
+}

@@ -7,15 +7,27 @@ import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
-  // Allow frontend to call the backend
+  // Allow frontend to call the backend.
+  // In development any localhost port is fine (Vite moves ports around); in
+  // production only the explicitly configured origins are allowed.
+  const isProd = process.env.NODE_ENV === 'production';
+  const allowList = (process.env.CORS_ORIGINS || process.env.FRONTEND_URL || '')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
+
   app.enableCors({
     origin: (origin, callback) => {
-      // Allow requests with no origin (like mobile apps or curl) or any localhost origin
-      if (!origin || /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) || origin === process.env.FRONTEND_URL) {
-        callback(null, true);
-      } else {
-        callback(null, true);
+      // Same-origin / server-to-server requests carry no Origin header.
+      if (!origin) return callback(null, true);
+
+      if (allowList.includes(origin)) return callback(null, true);
+
+      if (!isProd && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
+        return callback(null, true);
       }
+
+      return callback(new Error(`Origin ${origin} is not allowed by CORS`), false);
     },
     credentials: true,
   });

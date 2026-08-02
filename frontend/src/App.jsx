@@ -5,6 +5,7 @@ import './App.css';
 
 // Layouts (not lazy — needed immediately)
 import MainLayout from './layouts/MainLayout';
+import AdminLayout from './layouts/AdminLayout';
 import LockedLayout from './layouts/LockedLayout';
 import ProtectedRoute from './components/ProtectedRoute';
 
@@ -19,6 +20,9 @@ const PageLoader = () => (
 
 // Lazy-loaded pages
 const LoginPage          = lazy(() => import('./pages/LoginPage'));
+const ForgotPasswordPage = lazy(() => import('./pages/ForgotPasswordPage'));
+const ResetPasswordPage  = lazy(() => import('./pages/ResetPasswordPage'));
+const Lectures           = lazy(() => import('./pages/Lectures'));
 const StudentDashboard   = lazy(() => import('./pages/student/StudentDashboard'));
 const SubjectLanding     = lazy(() => import('./pages/student/SubjectLanding'));
 const AssessmentArena    = lazy(() => import('./pages/student/AssessmentArena'));
@@ -40,6 +44,19 @@ const DoubtChatRoom      = lazy(() => import('./pages/teacher/DoubtChatRoom'));
 const QuestionBank       = lazy(() => import('./pages/teacher/QuestionBank'));
 const PDFPreviewModal    = lazy(() => import('./pages/teacher/PDFPreviewModal'));
 const TeacherSettings    = lazy(() => import('./pages/teacher/TeacherSettings'));
+const TeacherTestLibrary = lazy(() => import('./pages/teacher/TestLibrary'));
+const TestResults        = lazy(() => import('./pages/teacher/TestResults'));
+const ReviewQueue        = lazy(() => import('./pages/teacher/ReviewQueue'));
+
+// Admin pages
+const AdminDashboard        = lazy(() => import('./pages/admin/AdminDashboard'));
+const UserManagement        = lazy(() => import('./pages/admin/UserManagement'));
+const AdminBatchManagement  = lazy(() => import('./pages/admin/AdminBatchManagement'));
+const AdminQuestionBank     = lazy(() => import('./pages/admin/AdminQuestionBank'));
+const TestInitiation        = lazy(() => import('./pages/admin/TestInitiation'));
+const TestLibrary           = lazy(() => import('./pages/admin/TestLibrary'));
+const AdminSettings         = lazy(() => import('./pages/admin/AdminSettings'));
+
 
 function App() {
   return (
@@ -49,6 +66,8 @@ function App() {
           <Routes>
             {/* Auth */}
             <Route path="/" element={<LoginPage />} />
+            <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+            <Route path="/reset-password" element={<ResetPasswordPage />} />
 
             {/* Main layout (sidebar) */}
             <Route path="/student" element={
@@ -63,6 +82,7 @@ function App() {
               <Route path="analytics" element={<AnalyticsHub />} />
               <Route path="doubts" element={<LiveDoubtClient />} />
               <Route path="leaderboard" element={<Leaderboard />} />
+              <Route path="lectures" element={<Lectures />} />
               <Route path="settings" element={<Settings />} />
             </Route>
 
@@ -82,6 +102,12 @@ function App() {
               <Route path="doubt-chat/:doubtId" element={<DoubtChatRoom />} />
               <Route path="batch-management" element={<BatchManagement />} />
               <Route path="question-bank" element={<QuestionBank />} />
+              {/* test-library was linked from three places but never routed */}
+              <Route path="test-library" element={<TeacherTestLibrary />} />
+              <Route path="test-constructor/:testId" element={<TestConstructor />} />
+              <Route path="test-results/:testId" element={<TestResults />} />
+              <Route path="review-queue" element={<ReviewQueue />} />
+              <Route path="lectures" element={<Lectures />} />
               <Route path="settings" element={<TeacherSettings />} />
               <Route path="pdf-preview" element={<PDFPreviewModal />} />
             </Route>
@@ -93,6 +119,21 @@ function App() {
               </ProtectedRoute>
             }>
               <Route path="test/:testId" element={<AssessmentArena />} />
+            </Route>
+
+            {/* Admin portal */}
+            <Route path="/admin" element={
+              <ProtectedRoute allowedRoles={['admin']}>
+                <AdminLayout />
+              </ProtectedRoute>
+            }>
+              <Route index element={<AdminDashboard />} />
+              <Route path="users" element={<UserManagement />} />
+              <Route path="batches" element={<AdminBatchManagement />} />
+              <Route path="question-bank" element={<AdminQuestionBank />} />
+              <Route path="test-initiation" element={<TestInitiation />} />
+              <Route path="test-library" element={<TestLibrary />} />
+              <Route path="settings" element={<AdminSettings />} />
             </Route>
           </Routes>
         </Suspense>

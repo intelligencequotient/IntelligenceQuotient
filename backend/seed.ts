@@ -58,6 +58,12 @@ async function seed() {
       role: 'teacher',
       subject: 'Mathematics',
     },
+    {
+      email: 'admin@edu.com',
+      password: 'admin123',
+      full_name: 'Super Admin',
+      role: 'admin',
+    },
   ];
 
   for (const u of usersToCreate) {
@@ -79,12 +85,12 @@ async function seed() {
         console.log(`⚠️ User ${u.email} already exists in auth. Fetching ID...`);
         // If they exist, let's find their ID
         const { data: existingUsers } = await supabase.auth.admin.listUsers();
-        const existing = existingUsers?.users.find((x) => x.email === u.email);
+        const existing = (existingUsers?.users as any[])?.find((x: any) => x.email === u.email);
         if (existing) {
           userId = existing.id;
           
           // Let's also reset their password and metadata just to be sure it matches the demo
-          await supabase.auth.admin.updateUserById(userId, { 
+          await supabase.auth.admin.updateUserById(userId as string, { 
             password: u.password,
             user_metadata: u.subject ? { subject: u.subject } : {} 
           });

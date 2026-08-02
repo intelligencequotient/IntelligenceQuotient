@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule } from '@nestjs/config';
-import { ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { CacheModule } from './common/cache/cache.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { UsersModule } from './modules/users/users.module';
 import { BatchesModule } from './modules/batches/batches.module';
@@ -23,6 +25,9 @@ import { LeaderboardModule } from './modules/leaderboard/leaderboard.module';
       limit: 100,
     }]),
 
+    // Shared infrastructure (global — Redis-backed when REDIS_URL is set)
+    CacheModule,
+
     // Feature modules
     AuthModule,
     UsersModule,
@@ -34,6 +39,11 @@ import { LeaderboardModule } from './modules/leaderboard/leaderboard.module';
     LecturesModule,
     AnalyticsModule,
     LeaderboardModule,
+  ],
+  providers: [
+    // ThrottlerModule only supplies configuration — without this the limits
+    // were never actually enforced on any route.
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
   ],
 })
 export class AppModule {}

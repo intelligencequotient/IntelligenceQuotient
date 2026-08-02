@@ -14,7 +14,8 @@ const ProtectedRoute = ({ allowedRoles, children }) => {
     const user = JSON.parse(userStr);
     if (allowedRoles && !allowedRoles.includes(user.role)) {
       // Logged in, but wrong role. Redirect them to their respective dashboard
-      if (user.role === 'teacher' || user.role === 'admin') return <Navigate to="/teacher" replace />;
+      if (user.role === 'admin') return <Navigate to="/admin" replace />;
+      if (user.role === 'teacher') return <Navigate to="/teacher" replace />;
       if (user.role === 'student') return <Navigate to="/student" replace />;
       return <Navigate to="/" replace />;
     }

@@ -1,8 +1,10 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { supabase } from '../../config/supabase.config';
+import { verifySupabaseToken } from '../../common/auth/supabase-jwt';
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
   /**
    * Login: Authenticates user via Supabase Auth and returns JWT tokens + profile.
    */
@@ -62,6 +64,74 @@ export class AuthService {
       accessToken: data.session.access_token,
       refreshToken: data.session.refresh_token,
     };
+  }
+
+  /**
+   * Logout: revokes the caller's session server-side so the access token cannot
+   * be replayed even if it was captured before it expired.
+   *
+   * `scope: 'local'` kills just this session; the frontend also clears its own
+   * localStorage. Failures are swallowed — a logout must never leave the user
+   * stuck on a screen they are trying to leave.
+   */
+  async logout(accessToken: string) {
+    try {
+      await supabase.auth.admin.signOut(accessToken, 'local');
+    } catch (e: any) {
+      this.logger.warn(`Session revocation failed (token may already be expired): ${e?.message}`);
+    }
+    return { success: true, message: 'Logged out.' };
+  }
+
+  /**
+   * Forgot password: sends a Supabase recovery email.
+   *
+   * Always reports success. Telling an anonymous caller whether an address is
+   * registered would let them enumerate the user base.
+   */
+  async forgotPassword(email: string) {
+    const redirectTo =
+      process.env.PASSWORD_RESET_REDIRECT_URL ||
+      `${process.env.FRONTEND_URL || 'http://localhost:5173'}/reset-password`;
+
+    try {
+      await supabase.auth.resetPasswordForEmail(email, { redirectTo });
+    } catch (e: any) {
+      this.logger.warn(`Password reset request failed for ${email}: ${e?.message}`);
+    }
+
+    return {
+      success: true,
+      message: 'If an account exists for that address, a reset link is on its way.',
+    };
+  }
+
+  /**
+   * Reset password: consumes the recovery token from the emailed link.
+   * The token's signature is verified before it is trusted to identify a user.
+   */
+  async resetPassword(accessToken: string, newPassword: string) {
+    let userId: string;
+    try {
+      const identity = await verifySupabaseToken(accessToken);
+      userId = identity.userId;
+    } catch {
+      throw new UnauthorizedException('This reset link is invalid or has expired.');
+    }
+
+    const { error } = await supabase.auth.admin.updateUserById(userId, {
+      password: newPassword,
+    });
+    if (error) throw new BadRequestException(error.message);
+
+    // Kill every other session so a stolen token cannot outlive the reset.
+    try {
+      await supabase.auth.admin.signOut(accessToken, 'global');
+    } catch {
+      // Non-fatal.
+    }
+
+    return { success: true, message: 'Password updated. Please log in again.' };
   }
 
   /**

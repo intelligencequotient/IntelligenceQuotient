@@ -22,7 +22,7 @@ export class QuestionsController {
     private readonly pdfProcessorService: PdfProcessorService
   ) {}
 
-  @ApiOperation({ summary: 'List all questions with filters' })
+  @ApiOperation({ summary: 'List all questions with filters (server-side pagination)' })
   @Get()
   findAll(
     @CurrentUser() user: any,
@@ -31,10 +31,25 @@ export class QuestionsController {
     @Query('q_type') q_type?: string,
     @Query('topic') topic?: string,
     @Query('search') search?: string,
+    @Query('review_status') review_status?: string,
     @Query('page') page?: number,
     @Query('limit') limit?: number,
   ) {
-    return this.questionsService.findAll({ subject, difficulty, q_type, topic, search, page, limit }, user);
+    return this.questionsService.findAll(
+      { subject, difficulty, q_type, topic, search, review_status, page, limit },
+      user,
+    );
+  }
+
+  @ApiOperation({ summary: 'QA queue — AI-extracted questions awaiting verification' })
+  @Get('review-queue')
+  getReviewQueue(
+    @CurrentUser() user: any,
+    @Query('subject') subject?: string,
+    @Query('page') page?: number,
+    @Query('limit') limit?: number,
+  ) {
+    return this.questionsService.getReviewQueue({ subject, page, limit }, user);
   }
 
   @ApiOperation({ summary: 'Create one question manually' })
@@ -65,6 +80,30 @@ export class QuestionsController {
   @Post(':id/duplicate')
   duplicate(@Param('id') id: string, @CurrentUser() user) {
     return this.questionsService.duplicate(id, user.id);
+  }
+
+  @ApiOperation({ summary: 'Approve a question from the QA queue (optionally with corrections)' })
+  @Patch(':id/approve')
+  approve(@Param('id') id: string, @Body() body: any, @CurrentUser() user) {
+    return this.questionsService.approve(id, user.id, body?.corrections);
+  }
+
+  @ApiOperation({ summary: 'Reject a question from the QA queue' })
+  @Patch(':id/reject')
+  reject(@Param('id') id: string, @CurrentUser() user) {
+    return this.questionsService.reject(id, user.id);
+  }
+
+  @ApiOperation({ summary: 'Approve many questions at once' })
+  @Post('bulk-approve')
+  bulkApprove(@Body() body: { ids: string[] }, @CurrentUser() user) {
+    return this.questionsService.bulkApprove(body?.ids, user.id);
+  }
+
+  @ApiOperation({ summary: 'Soft-delete many questions at once' })
+  @Post('bulk-delete')
+  bulkDelete(@Body() body: { ids: string[] }) {
+    return this.questionsService.bulkRemove(body?.ids);
   }
 
   @ApiOperation({ summary: 'Upload CSV and get a preview (does not save yet)' })

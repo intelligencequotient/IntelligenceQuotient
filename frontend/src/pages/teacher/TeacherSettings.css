@@ -236,3 +236,34 @@ input:checked + .slider:before { transform: translateX(20px); }
   .profile-edit-grid { flex-direction: column; align-items: center; }
   .avatar-section { width: 100%; margin-bottom: var(--spacing-3); }
 }
+
+/* ── Added: real API wiring — disabled fields, hints, sign out ────────────── */
+
+.ts-muted { color: var(--text-secondary, #64748b); }
+.ts-toast-error { background: #dc2626 !important; }
+
+.ts-hint {
+  display: block; margin-top: 5px;
+  font-size: 0.76rem; color: var(--text-secondary, #94a3b8);
+}
+
+.settings-panel input:disabled {
+  background: var(--border-color, #f1f5f9);
+  color: var(--text-secondary, #64748b);
+  cursor: not-allowed;
+}
+
+.tab-btn { display: inline-flex; align-items: center; gap: 7px; }
+
+.ts-signout {
+  margin-top: 26px; padding-top: 18px;
+  border-top: 1px solid var(--border-color, #e2e8f0);
+}
+.ts-signout-btn {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 8px 15px; border-radius: 8px; cursor: pointer;
+  font-size: 0.85rem; font-weight: 600;
+  background: transparent; color: #dc2626;
+  border: 1px solid rgba(220, 38, 38, 0.3);
+}
+.ts-signout-btn:hover { background: rgba(220, 38, 38, 0.07); }

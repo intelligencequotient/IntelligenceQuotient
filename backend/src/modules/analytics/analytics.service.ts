@@ -13,19 +13,49 @@ export class AnalyticsService {
       .eq('status', 'submitted')
       .order('submitted_at', { ascending: true });
 
-    // Fetch per-question answer accuracy
-    const { data: answers } = await supabase
-      .from('answers')
-      .select('is_correct, questions(subject, topic, difficulty)')
-      .eq('attempts.student_id', studentId);
+    const attemptIds = (attempts || []).map((a: any) => a.id);
 
-    // Build subject breakdown
+    // Per-question accuracy.
+    // NOTE: this previously filtered with .eq('attempts.student_id', …), which
+    // PostgREST rejects because `attempts` is not embedded in the select — the
+    // error was swallowed and every breakdown came back empty. Filter by the
+    // student's own attempt ids instead.
+    const { data: answers, error: answersError } = attemptIds.length
+      ? await supabase
+          .from('answers')
+          .select('is_correct, time_spent_seconds, questions(subject, topic, difficulty)')
+          .in('attempt_id', attemptIds)
+      : { data: [], error: null };
+
+    if (answersError) throw new Error(answersError.message);
+
+    // Build subject + topic breakdowns
     const subjectMap: Record<string, { correct: number; total: number }> = {};
+    const topicMap: Record<string, { subject: string; correct: number; total: number }> = {};
+    let totalTimeSeconds = 0;
+    let timedAnswers = 0;
+
     for (const ans of answers || []) {
-      const subject = (ans.questions as any)?.subject || 'Unknown';
+      const q = (ans as any).questions;
+      const subject = q?.subject || 'Unknown';
+      const topic = q?.topic;
+
       if (!subjectMap[subject]) subjectMap[subject] = { correct: 0, total: 0 };
       subjectMap[subject].total += 1;
       if (ans.is_correct) subjectMap[subject].correct += 1;
+
+      if (topic) {
+        const key = `${subject}::${topic}`;
+        if (!topicMap[key]) topicMap[key] = { subject, correct: 0, total: 0 };
+        topicMap[key].total += 1;
+        if (ans.is_correct) topicMap[key].correct += 1;
+      }
+
+      const secs = Number((ans as any).time_spent_seconds) || 0;
+      if (secs > 0) {
+        totalTimeSeconds += secs;
+        timedAnswers += 1;
+      }
     }
 
     const subjectBreakdown = Object.entries(subjectMap).map(([subject, stats]) => ({
@@ -33,6 +63,18 @@ export class AnalyticsService {
       accuracy: stats.total > 0 ? Math.round((stats.correct / stats.total) * 100) : 0,
       totalAnswered: stats.total,
     }));
+
+    const topicBreakdown = Object.entries(topicMap)
+      .map(([key, stats]) => ({
+        topic: key.split('::')[1],
+        subject: stats.subject,
+        accuracy: stats.total > 0 ? Math.round((stats.correct / stats.total) * 100) : 0,
+        totalAnswered: stats.total,
+      }))
+      .sort((a, b) => a.accuracy - b.accuracy);
+
+    const totalAnswered = Object.values(subjectMap).reduce((s, v) => s + v.total, 0);
+    const totalCorrect = Object.values(subjectMap).reduce((s, v) => s + v.correct, 0);
 
     // Score history for chart
     const scoreHistory = (attempts || []).map((a) => ({
@@ -59,7 +101,13 @@ export class AnalyticsService {
 
     return {
       testsAttempted: attempts?.length || 0,
+      totalScore: (attempts || []).reduce((s, a: any) => s + (Number(a.total_score) || 0), 0),
+      avgAccuracy: totalAnswered > 0 ? Math.round((totalCorrect / totalAnswered) * 100) : 0,
+      avgSecondsPerQuestion: timedAnswers > 0 ? Math.round(totalTimeSeconds / timedAnswers) : 0,
       subjectBreakdown,
+      topicBreakdown,
+      // Weakest five topics with enough evidence to be meaningful.
+      weakTopics: topicBreakdown.filter((t) => t.totalAnswered >= 3).slice(0, 5),
       scoreHistory,
       spacedRepetition: srState || [],
       predictions: predictions || [],

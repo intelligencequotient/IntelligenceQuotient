@@ -12,74 +12,88 @@ A full-stack application designed to streamline the assessment process for teach
 
 ## 🚀 Quick Start (How to Run)
 
-You will need two separate terminal windows to run the full stack application.
+### 0. One-time database setup
+Run `backend/migrations/001_security_indexes_and_features.sql` in the Supabase
+SQL Editor. It adds Row Level Security, indexes, the negative-marking and
+QA-review columns, and creates the spaced-repetition / predictions / lectures
+tables. It is idempotent — safe to re-run.
+
+Then copy `.env.example` to `.env` (repo root) and `backend/.env`, and fill in
+your Supabase and Groq keys.
 
 ### 1. Start the Backend (NestJS)
 ```bash
-cd backend
-npm install
-npm run start:dev
+cd backend && npm install && npm run start:dev
 ```
-*Note: Ensure your `.env` file is present in the `backend` folder with your Supabase and Groq keys, and Python is installed with PyMuPDF and Groq packages.*
+*Python 3 with `PyMuPDF`, `Pillow` and `groq` must be on PATH for the PDF pipeline —
+see `backend/scripts/pdf-processor/requirements.txt`.*
 
 ### 2. Start the Frontend (React / Vite)
 ```bash
-cd frontend
-npm install
-npm run dev
+cd frontend && npm install && npm run dev
+```
+
+### Or run the whole stack with Docker
+```bash
+docker compose up --build
+```
+Frontend on `:8080`, API on `:3000`, Redis for cache. Postgres and Auth stay in Supabase.
+
+### Tests
+```bash
+cd backend && npm test
+```
+```bash
+cd frontend && npx vitest run
 ```
 
 ---
 
 ## ✅ Completed Features
-- **PDF Extraction Pipeline**: Fully functional Python script (`extract.py`) that uses PyMuPDF to intelligently parse questions, isolate diagram bounding boxes, and crop them perfectly while excluding trailing answers.
-- **AI Classification**: Integration with Groq's API (`classify.py`) to automatically categorize parsed questions by Subject and Topic using LLMs, with an automatic fallback to local keyword classification on rate limits.
-- **Database Architecture**: Supabase integration set up with a functional `questions` schema, handling JSONB answer keys, and a `question-images` storage bucket.
-- **Teacher Portal Frontend**: A modern React (Vite) dashboard featuring:
-  - **Question Bank**: A searchable, filterable data grid to view extracted questions, complete with a dedicated Answer column and a click-to-enlarge Image Lightbox.
-  - **CSV/PDF Upload UI**: A dedicated interface for uploading exam files to trigger the backend processing pipeline.
-- **Resilient Data Fetching**: Frontend context providers optimized with `Promise.allSettled` to prevent single-endpoint failures from crashing the app.
+
+**Security & correctness**
+- Cryptographic JWT verification (JWKS + rotation, HS256 fallback), role always read from the DB
+- Row Level Security on every user-data table, plus performance indexes (`migrations/001`)
+- Server-enforced exam windows: scheduled start/end, deadline on every write, background sweeper that grades abandoned attempts
+- Negative marking applied at grading time; answer-key comparison handles single, multi-select and numeric answers
+- CORS allow-list in production, throttling actually enforced, session revoked on logout
+
+**Features**
+- **Auth**: login, silent token refresh, logout, forgot/reset password
+- **Live doubts**: real-time chat with per-room authorization, typing indicators, image upload with content sniffing
+- **Question Bank**: server-side pagination, bulk select/delete, real CRUD, LaTeX rendering (KaTeX)
+- **QA review queue**: AI-extracted questions land as `pending` and cannot enter a test until a teacher approves them
+- **PDF pipeline**: PyMuPDF extraction → Groq classification → vision-model fallback for unreadable questions → Supabase Storage, with live websocket progress
+- **CSV upload**: server-side parse → preview with per-row validation → confirm
+- **Test results** (teacher): scoreboard, cohort stats, per-question difficulty, CSV export
+- **Analytics**: real subject/topic breakdowns, spaced repetition (SM-2) and risk predictions written after every submission
+- **Lectures & syllabus** library
+- **Admin portal**: user management, batch management, test initiation
+
+**Student experience**
+- Dashboard lists assigned tests and launches them; resumes a part-finished attempt with answers, flags and timing restored
+- Post-test result: real score, cohort rank/percentile, subject breakdown and full answer review
+- Analytics, Leaderboard, Subject pages and Lectures all read live data
+
+**Secure exam module (`exam/`)**
+- Bearer-token auth on every route; the student id comes from the verified token, never the request body
+- Real question paper from the database (answer key never sent to the client)
+- Server-side grading with negative marking; violations still terminate at three strikes
+
+**Infra**
+- Dockerfiles + `docker-compose.yml`, GitHub Actions CI (typecheck, lint, tests, image build)
+- Redis-backed cache with in-memory fallback; leaderboard cached rather than recomputed per request
+- 48 tests (22 main backend, 7 exam service, 19 frontend)
 
 ---
 
-## 📝 Comprehensive To-Do Checklist
+## 📝 Known Gaps
 
-### **Frontend (UI / UX)**
-- [ ] **Upload Progress & Websockets**: Implement real-time websockets (Socket.io) or Server-Sent Events (SSE) to display a live progress bar during the 1-2 minute PDF extraction process.
-- [ ] **Question Bank Actions**: fully wire up the `Edit`, `Duplicate`, and `Delete` functionalities in the Question Bank grid.
-- [ ] **Bulk Selection**: Add checkboxes to the Question Bank table to allow selecting multiple questions for bulk deletion or adding to a Test.
-- [ ] **Advanced Filtering**: Add subtopic filters, date-range filters, and text search to the Question Bank.
-- [ ] **Server-Side Pagination**: Hook up backend pagination properly into the Question Bank UI to handle tens of thousands of questions without lagging the browser.
-- [ ] **Test Constructor Module**: Build the full drag-and-drop interface for creating and managing custom assessments, exporting them back as PDFs or assigning them digitally.
-- [ ] **Student CRM / Analytics**: Build the dashboard pages for Cohort Analytics and Student management.
-- [ ] **Responsive Design**: Ensure the entire teacher dashboard is fully responsive on tablets and mobile devices.
-
-### **Backend & PDF Pipeline**
-- [ ] **Background Queues (BullMQ)**: Offload the heavy PDF processing pipeline to a Redis-backed background job queue so API requests don't hang or time out.
-- [ ] **Vision API Integration**: Upgrade the extraction script to fall back to a Vision LLM (like GPT-4o or Claude 3.5 Sonnet) for questions where pure text-extraction fails (e.g. complex chemistry diagrams).
-- [ ] **Rate Limiting & Key Rotation**: Improve the Groq API rate limit handling. Implement round-robin key rotation and automated backoff queues to avoid dropping questions.
-- [ ] **Robust Temp File Cleanup**: Ensure that all temporary PDF runs and images are aggressively cleaned up, using cron jobs if necessary to sweep abandoned temp directories.
-- [ ] **LaTeX / MathML Support**: Render LaTeX equations properly in the frontend instead of relying purely on image crops for math formulas.
-- [ ] **Manual Override / QA Flow**: Create an approval queue for AI-extracted questions where teachers can manually verify or fix the parsed text before it hits the live Question Bank.
-
-### **Database (Supabase)**
-- [ ] **Row Level Security (RLS)**: Enforce strict RLS policies on the `questions`, `tests`, and `doubts` tables to guarantee teachers can only access their own institution's data.
-- [ ] **Database Indexes**: Add proper indexing on `subject`, `topic`, and `difficulty` columns to speed up querying in the Question Bank.
-- [ ] **Storage Buckets Rules**: Set up proper cache-control headers, max-age, and restrictive access rules for the `question-images` bucket.
-
-### **Testing (Quality Assurance)**
-- [ ] **Unit Tests (Backend)**: Write Jest tests for all NestJS services and controllers (especially `QuestionsService` and `PdfProcessorService`).
-- [ ] **Unit Tests (Frontend)**: Write Vitest/React Testing Library tests for complex components like the Data Table and File Uploader.
-- [ ] **Python Pipeline Tests**: Add `pytest` test suites for `extract.py` and `classify.py` using mock PDFs to guarantee the regex and clustering logic doesn't break on edge cases.
-- [ ] **Integration Tests**: Test the full API flow from uploading a mock PDF buffer to verifying the correct database inserts.
-- [ ] **End-to-End (E2E) Tests**: Set up Cypress or Playwright to automate logging into the Teacher Portal, uploading a PDF, and verifying the new questions appear in the bank.
-- [ ] **Load Testing**: Use Artillery or k6 to simulate multiple teachers uploading large PDFs simultaneously to test the queue robustness.
-
-### **Deployment & DevOps**
-- [ ] **Dockerization**: Create `Dockerfile`s and a `docker-compose.yml` for the frontend, backend, and the Python micro-environment.
-- [ ] **CI/CD Pipeline**: Set up GitHub Actions to automatically run tests and linting on every pull request.
-- [ ] **Production Hosting**: Deploy the backend to a scalable service (e.g., AWS ECS, Render, or Railway) and the frontend to Vercel/Netlify.
-- [ ] **Environment Segregation**: Properly separate `.env` files and Supabase instances into `development`, `staging`, and `production`.
+- **BullMQ is installed but unused** — PDF extraction still runs inside the HTTP request. Live websocket progress covers the UX, but a very large paper can still tie up a worker.
+- **Self-registration is deliberately absent** — accounts are provisioned by an admin. Adding public signup to an exam platform would be a security regression.
+- **The `exam/` sub-app is a second front end** for proctored mode. The in-app Assessment Arena is the default path; launch the proctored shell with `#token=<access_token>` in the URL fragment (see `exam/frontend/src/api/client.js`).
+- **Load testing** (k6 / Artillery) has not been run — it needs a deployed target.
+- Notification preferences were removed from Teacher Settings rather than left as non-functional toggles; there is no notification system behind them yet.
 
 ---
 *This document serves as the master tracking list for all upcoming features, technical debt, and quality assurance tasks.*

@@ -1,4 +1,4 @@
-import { Controller, Get, Patch, Param, Body, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Param, Body, Query, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { UsersService } from './users.service';
 import { SupabaseAuthGuard } from '../../common/guards/supabase-auth.guard';
@@ -55,4 +55,44 @@ export class UsersController {
   listTeachers() {
     return this.usersService.listTeachers();
   }
+
+  // ─── Admin-only endpoints ──────────────────────────────────────────────────
+
+  @ApiOperation({ summary: '[Admin] List all users with search/role filter' })
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @Get('admin/all')
+  listAllUsers(
+    @Query('search') search?: string,
+    @Query('role') role?: string,
+  ) {
+    return this.usersService.listAllUsers({ search, role });
+  }
+
+  @ApiOperation({ summary: '[Admin] Create a new teacher or student account' })
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @Post('admin/create')
+  adminCreateUser(
+    @Body() body: { full_name: string; email: string; password: string; role: 'student' | 'teacher' },
+  ) {
+    return this.usersService.adminCreateUser(body);
+  }
+
+  @ApiOperation({ summary: '[Admin] Reset any user\'s password' })
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @Patch('admin/:id/password')
+  adminResetPassword(@Param('id') id: string, @Body() body: { newPassword: string }) {
+    return this.usersService.adminResetPassword(id, body.newPassword);
+  }
+
+  @ApiOperation({ summary: '[Admin] Delete a user' })
+  @UseGuards(RolesGuard)
+  @Roles('admin')
+  @Delete('admin/:id')
+  adminDeleteUser(@Param('id') id: string) {
+    return this.usersService.adminDeleteUser(id);
+  }
 }
+

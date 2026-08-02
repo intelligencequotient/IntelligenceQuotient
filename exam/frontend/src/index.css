@@ -232,3 +232,16 @@ body {
 .sec-tab:hover { color: #3b82f6; }
 .sec-tab.active { color: #3b82f6; border-bottom-color: #3b82f6; }
 .q-option input[type="checkbox"] { transform: scale(1.2); margin-right: 15px; }
+
+/* ── Added: real result summary on submit ────────────────────────────────── */
+
+.exam-result-summary {
+  margin: 18px 0;
+  padding: 18px 24px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.08);
+  line-height: 1.7;
+}
+.exam-result-score { font-size: 1.9rem; margin: 0 0 6px; }
+.exam-result-score strong { color: #22c55e; }
+.exam-result-note { opacity: 0.75; font-size: 0.87rem; margin-top: 8px; }

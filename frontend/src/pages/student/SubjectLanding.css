@@ -264,3 +264,25 @@
 .chapter-card:hover .btn-chapter-action {
   transform: translateY(0);
 }
+
+/* ── Added: real syllabus/lecture data, empty states ─────────────────────── */
+
+.sl-muted { color: var(--text-secondary, #64748b); }
+.sl-small { font-size: 0.79rem; }
+
+.sl-empty {
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  padding: 52px 20px; text-align: center; color: var(--text-secondary, #94a3b8);
+  border: 1px dashed var(--border-color, #e2e8f0); border-radius: 14px;
+}
+
+.sl-link {
+  color: var(--subject-color, #6366f1); font-weight: 600;
+  font-size: 0.87rem; text-decoration: none;
+}
+.sl-link:hover { text-decoration: underline; }
+
+.chapter-card .btn-chapter-action {
+  display: inline-flex; align-items: center; gap: 6px;
+  text-decoration: none; justify-content: center;
+}

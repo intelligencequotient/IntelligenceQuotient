@@ -1,0 +1,12 @@
+node_modules
+dist
+coverage
+temp
+.env
+.env.*
+*.log
+.git
+.github
+migrations
+test
+**/*.spec.ts

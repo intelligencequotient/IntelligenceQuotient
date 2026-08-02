@@ -34,9 +34,10 @@ export class AttemptsController {
   @Patch(':id/flag')
   toggleFlag(
     @Param('id') id: string,
+    @CurrentUser() user,
     @Body() body: { question_id: string; flagged: boolean },
   ) {
-    return this.attemptsService.toggleFlag(id, body.question_id, body.flagged);
+    return this.attemptsService.toggleFlag(id, user.id, body.question_id, body.flagged);
   }
 
   @ApiOperation({ summary: 'Submit the exam — backend calculates score' })

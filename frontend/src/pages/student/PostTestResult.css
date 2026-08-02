@@ -263,3 +263,33 @@
 
 .btn-retake { background: linear-gradient(135deg, #1e293b, #334155); color: white; border: none; }
 .btn-retake:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(30,41,59,0.3); }
+
+/* ── Added: real cohort stats, flags, empty/error states ──────────────────── */
+
+.pr-muted { color: var(--text-secondary, #64748b); }
+.pr-error  { color: #dc2626; margin-bottom: 16px; }
+
+.pr-auto-flag {
+  display: inline-flex; align-items: center; gap: 5px; margin-left: 8px;
+  padding: 3px 10px; border-radius: 999px; font-size: 0.74rem; font-weight: 700;
+  background: rgba(245, 158, 11, 0.16); color: #b45309;
+}
+
+.pr-cohort-strip {
+  display: flex; gap: 26px; flex-wrap: wrap;
+  padding: 12px 18px; margin-bottom: 20px; border-radius: 10px;
+  background: var(--card-bg, #fff); border: 1px solid var(--border-color, #e2e8f0);
+  font-size: 0.86rem; color: var(--text-secondary, #64748b);
+}
+.pr-cohort-strip strong { color: var(--text-primary, #1e293b); margin-left: 4px; }
+
+.pr-flagged {
+  display: inline-flex; align-items: center; gap: 4px; margin-left: 8px;
+  font-size: 0.68rem; font-weight: 700; color: #b45309;
+  background: rgba(245, 158, 11, 0.15); padding: 2px 7px; border-radius: 999px;
+}
+
+/* Wide review table scrolls inside its own container. */
+.table-responsive { overflow-x: auto; }
+.answer-table { min-width: 780px; }
+.q-review-text { max-width: 320px; }

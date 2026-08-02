@@ -1,0 +1,69 @@
+# Local/staging stack for the IQ platform.
+#
+#   docker compose up --build
+#
+# Postgres and Auth live in Supabase, so this file only runs what we own:
+# the API, the static frontend, and Redis for cache + queues.
+#
+# Copy .env.example to .env first — compose reads it automatically.
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Cache data is disposable; persistence keeps it warm across restarts.
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    # Not published to the host — only the backend needs to reach it.
+    expose:
+      - "6379"
+
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:8080}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
+      SUPABASE_JWT_SECRET: ${SUPABASE_JWT_SECRET:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      REDIS_URL: redis://redis:6379
+      PASSWORD_RESET_REDIRECT_URL: ${PASSWORD_RESET_REDIRECT_URL:-http://localhost:8080/reset-password}
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:3000/api/docs').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Baked into the bundle at build time — rebuild to change them.
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:3000/api}
+        VITE_SOCKET_URL: ${VITE_SOCKET_URL:-http://localhost:3000}
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"
+
+volumes:
+  redis-data:

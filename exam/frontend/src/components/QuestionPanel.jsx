@@ -62,8 +62,10 @@ const QuestionPanel = ({ question, qIndex, currentResponse, onResponseChange }) 
     handleResponseUpdate({ indices: newSelected });
   };
 
+  // The grader compares against `{ value }` — sending `{ text }` meant every
+  // numerical answer was scored as wrong no matter what the student typed.
   const handleNATChange = (val) => {
-    handleResponseUpdate({ text: val });
+    handleResponseUpdate({ value: val });
   };
 
   const renderOptions = () => {
@@ -109,7 +111,7 @@ const QuestionPanel = ({ question, qIndex, currentResponse, onResponseChange }) 
     }
 
     if (question.type === 'nat') {
-      const val = currentResponse?.text || '';
+      const val = currentResponse?.value ?? '';
       return (
         <div className="q-options nat">
           <div className="nat-input-container">

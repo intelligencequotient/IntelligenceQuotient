@@ -7,6 +7,35 @@ import {
 import { apiClient, getStoredUser } from '../../api/client';
 import './StudentDashboard.css';
 
+/**
+ * Origin of the standalone secure-exam app. Was hardcoded to localhost:5175,
+ * which meant the "Start Test" button could only ever work on one dev machine.
+ */
+const EXAM_APP_URL = (import.meta.env.VITE_EXAM_APP_URL || 'http://localhost:5175').replace(/\/$/, '');
+
+/**
+ * Hands the session over to the exam app.
+ *
+ * The tokens travel in the URL *fragment*: browsers never send it to a server
+ * and it never reaches an access log. The refresh token goes too — an exam can
+ * run for three hours and an access token expires in one.
+ */
+const launchExam = (testId) => {
+  const token = localStorage.getItem('access_token');
+  const refresh = localStorage.getItem('refresh_token');
+
+  const fragment = new URLSearchParams();
+  if (token) fragment.set('token', token);
+  if (refresh) fragment.set('refresh', refresh);
+
+  const url = `${EXAM_APP_URL}/exam/instructions/${testId}#${fragment.toString()}`;
+
+  // Open in a new tab so the portal stays put behind the exam — the launcher's
+  // Cancel button calls window.close(), which only works on a scripted window.
+  const win = window.open(url, '_blank', 'noopener,noreferrer');
+  if (!win) window.location.href = url;
+};
+
 const SUBJECTS = [
   { id: 'physics',   name: 'Physics',     icon: Book,        colorClass: 'subject-physics',   desc: 'Master mechanics and electromagnetism.' },
   { id: 'chemistry', name: 'Chemistry',   icon: FlaskConical, colorClass: 'subject-chemistry', desc: 'Explore organic and inorganic reactions.' },
@@ -199,7 +228,7 @@ const StudentDashboard = () => {
                   ) : state === 'open' ? (
                     <button
                       className="btn btn-primary"
-                      onClick={() => navigate(`/student/locked/test/${test.id}`)}
+                      onClick={() => launchExam(test.id)}
                     >
                       <PlayCircle size={17} /> {inProgress ? 'Resume Test' : 'Start Test'}
                     </button>

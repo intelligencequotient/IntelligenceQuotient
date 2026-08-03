@@ -12,7 +12,7 @@ const ActionBar = ({ currentQ, totalQ, onNavigate, currentResponse, questionId, 
     if (!currentResponse) return false;
     if (currentResponse.index !== undefined && currentResponse.index !== null) return true;
     if (currentResponse.indices && currentResponse.indices.length > 0) return true;
-    if (currentResponse.text && currentResponse.text.trim() !== '') return true;
+    if (currentResponse.value != null && String(currentResponse.value).trim() !== '') return true;
     return false;
   };
 

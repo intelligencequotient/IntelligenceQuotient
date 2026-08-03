@@ -50,6 +50,13 @@ export class TestsController {
     return this.testsService.addQuestions(id, body.question_ids, user);
   }
 
+  @ApiOperation({ summary: '[Admin] Assign teachers (multi) to fill questions for this test' })
+  @UseGuards(RolesGuard) @Roles('admin')
+  @Patch(':id/assign-teacher')
+  assignTeachers(@Param('id') id: string, @Body() body: { teacher_ids: string[] }) {
+    return this.testsService.assignTeachers(id, body.teacher_ids ?? []);
+  }
+
   @ApiOperation({ summary: '[Teacher] Assign test to batches with schedule' })
   @UseGuards(RolesGuard) @Roles('teacher', 'admin')
   @Post(':id/assign')

@@ -11,26 +11,35 @@ const ViolationMonitor = ({ sessionId, onViolationLimitReached, onViolationWarni
   useEffect(() => { onWarningRef.current = onViolationWarning; }, [onViolationWarning]);
 
   useEffect(() => {
-    const logViolation = async (type) => {
-      if (sessionId?.startsWith('mock-session')) {
-        localStrikeCount.current += 1;
-        if (localStrikeCount.current >= 3) {
-          onLimitRef.current();
-        } else {
-          onWarningRef.current(type);
-        }
-        return;
-      }
+    /** Counts the strike in this tab. Used whenever the server cannot count it. */
+    const strikeLocally = (type) => {
+      localStrikeCount.current += 1;
+      if (localStrikeCount.current >= 3) onLimitRef.current();
+      else onWarningRef.current(type);
+    };
 
+    const logViolation = async (type) => {
+      // Offline demo paper — there is no attempt to record against.
+      if (sessionId?.startsWith('mock-session')) return strikeLocally(type);
+
+      // Violations hang off the attempt the portal created. This used to post to
+      // `/exam/session/:id/violation`, which lives on the standalone exam service
+      // on port 3001 and is keyed on a table this flow never writes to — so every
+      // strike 404'd and proctoring silently did nothing.
       try {
-        const res = await apiClient.post(`/exam/session/${sessionId}/violation`, { type });
-        if (res.terminated) {
-          onLimitRef.current();
-        } else {
-          onWarningRef.current(type);
-        }
+        const res = await apiClient.post(`/attempts/${sessionId}/violation`, { type });
+
+        // `degraded` means the server has nowhere to store strikes yet (migration
+        // 005 not applied). Proctoring still works, just per-tab.
+        if (res.degraded) return strikeLocally(type);
+
+        if (res.terminated) onLimitRef.current();
+        else onWarningRef.current(type);
       } catch (err) {
         console.error('Failed to log violation', err);
+        // The server is the source of truth for the strike count, but a network
+        // blip must not hand out free violations either.
+        strikeLocally(type);
       }
     };
 

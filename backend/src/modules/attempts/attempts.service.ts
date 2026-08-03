@@ -12,6 +12,18 @@ import { CacheService } from '../../common/cache/cache.service';
 /** Clock skew allowance so a student whose machine is a few seconds fast is not punished. */
 const CLOCK_GRACE_SECONDS = 30;
 
+/** Three strikes and the attempt is finalised. Mirrors the exam UI's warning counter. */
+const VIOLATION_LIMIT = 3;
+
+/** Palette states the exam UI tracks per question. Anything else is rejected. */
+const ANSWER_STATUSES = [
+  'not_visited',
+  'not_answered',
+  'answered',
+  'marked',
+  'answered_marked',
+] as const;
+
 interface AttemptWindow {
   attemptId: string;
   testId: string;
@@ -31,12 +43,37 @@ interface MarkingScheme {
 export class AttemptsService {
   private readonly logger = new Logger(AttemptsService.name);
 
+  /**
+   * Whether migration 005 has been applied. Probed lazily on first use and then
+   * remembered, so a database that is a migration behind degrades instead of
+   * failing every answer save with a 500.
+   */
+  private hasAnswerStatus: boolean | null = null;
+  private hasViolationsTable: boolean | null = null;
+
   constructor(
     private readonly srsService: SpacedRepetitionService,
     private readonly cache: CacheService,
   ) {}
 
   // ── Helpers ─────────────────────────────────────────────────────────────────
+
+  /** True when PostgREST is telling us the column or table simply is not there. */
+  private isMissingSchema(error: any): boolean {
+    if (!error) return false;
+    const code = String(error.code || '');
+    if (code === 'PGRST204' || code === 'PGRST205' || code === '42703' || code === '42P01') {
+      return true;
+    }
+    return /does not exist|schema cache/i.test(String(error.message || ''));
+  }
+
+  private warnMigrationMissing(what: string) {
+    this.logger.warn(
+      `${what} is missing — run backend/migrations/005_exam_session_sync.sql. ` +
+        'Running degraded until then.',
+    );
+  }
 
   /**
    * Loads an attempt together with the deadline derived from the test duration.
@@ -89,6 +126,52 @@ export class AttemptsService {
     };
   }
 
+  /**
+   * The effective scheduled window for a student on a test.
+   *
+   * Returns null when the student has no assignment at all. When several rows
+   * exist (one per batch), the windows are merged: the exam opens at the
+   * earliest start any batch was given and closes at the latest end. A missing
+   * bound means "unbounded" and wins over any explicit one.
+   */
+  private async resolveAssignmentWindow(
+    testId: string,
+    studentId: string,
+  ): Promise<{ scheduled_start: string | null; scheduled_end: string | null } | null> {
+    const { data: rows, error } = await supabase
+      .from('test_assignments')
+      .select('id, scheduled_start, scheduled_end')
+      .eq('test_id', testId)
+      .eq('student_id', studentId);
+
+    if (error) throw new Error(error.message);
+    if (!rows?.length) return null;
+
+    let start: number | null = null;
+    let end: number | null = null;
+    let unboundedStart = false;
+    let unboundedEnd = false;
+
+    for (const row of rows) {
+      if (!row.scheduled_start) unboundedStart = true;
+      else {
+        const t = new Date(row.scheduled_start).getTime();
+        start = start === null ? t : Math.min(start, t);
+      }
+
+      if (!row.scheduled_end) unboundedEnd = true;
+      else {
+        const t = new Date(row.scheduled_end).getTime();
+        end = end === null ? t : Math.max(end, t);
+      }
+    }
+
+    return {
+      scheduled_start: unboundedStart || start === null ? null : new Date(start).toISOString(),
+      scheduled_end: unboundedEnd || end === null ? null : new Date(end).toISOString(),
+    };
+  }
+
   /** Rejects writes to an attempt that is finished or past its deadline. */
   private assertWritable(window: AttemptWindow) {
     if (window.status === 'submitted') {
@@ -108,13 +191,11 @@ export class AttemptsService {
    * Enforces the scheduled window, then creates or resumes the attempt.
    */
   async startAttempt(testId: string, studentId: string) {
-    // Check if student is assigned this test
-    const { data: assignment } = await supabase
-      .from('test_assignments')
-      .select('id, scheduled_start, scheduled_end')
-      .eq('test_id', testId)
-      .eq('student_id', studentId)
-      .single();
+    // A student can sit in more than one batch, and both batches may have been
+    // assigned the same test — which means more than one assignment row. Read
+    // them all and merge into the widest window rather than using `.single()`,
+    // which errors on the second row and reads as "not assigned".
+    const assignment = await this.resolveAssignmentWindow(testId, studentId);
 
     if (!assignment) {
       throw new ForbiddenException('You are not assigned to this test');
@@ -137,13 +218,16 @@ export class AttemptsService {
       }
     }
 
-    // Check if already attempted
+    // Check if already attempted. `maybeSingle` — a first-time student has no
+    // row at all, and that is not an error.
     const { data: existing } = await supabase
       .from('attempts')
       .select('id, status, started_at')
       .eq('test_id', testId)
       .eq('student_id', studentId)
-      .single();
+      .order('started_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
     // If already submitted, reject
     if (existing?.status === 'submitted') {
@@ -212,10 +296,26 @@ export class AttemptsService {
 
   /** Answers already saved for an attempt, so a resumed exam can restore its state. */
   async getSavedAnswers(attemptId: string) {
-    const { data } = await supabase
-      .from('answers')
-      .select('question_id, selected_answer, flagged_for_doubt, time_spent_seconds')
-      .eq('attempt_id', attemptId);
+    const columns = 'question_id, selected_answer, flagged_for_doubt, time_spent_seconds';
+
+    if (this.hasAnswerStatus !== false) {
+      const { data, error } = await supabase
+        .from('answers')
+        .select(`${columns}, status`)
+        .eq('attempt_id', attemptId);
+
+      if (!error) {
+        this.hasAnswerStatus = true;
+        return data || [];
+      }
+      if (!this.isMissingSchema(error)) return [];
+
+      this.hasAnswerStatus = false;
+      this.warnMigrationMissing('answers.status');
+    }
+
+    // Migration 005 not applied: resume the answers, just not the palette state.
+    const { data } = await supabase.from('answers').select(columns).eq('attempt_id', attemptId);
     return data || [];
   }
 
@@ -229,24 +329,113 @@ export class AttemptsService {
     body: {
       question_id: string;
       selected_answer: any;
+      status?: string;
       time_spent_seconds: number;
     },
   ) {
     const window = await this.loadWindow(attemptId, studentId);
     this.assertWritable(window);
 
-    const { error } = await supabase.from('answers').upsert(
-      {
-        attempt_id: attemptId,
-        question_id: body.question_id,
-        selected_answer: body.selected_answer,
-        time_spent_seconds: Math.max(0, Number(body.time_spent_seconds) || 0),
-      },
-      { onConflict: 'attempt_id,question_id' },
-    );
+    // The palette state travels with the answer. Without it, a resumed exam
+    // showed every question as "not visited" even though the answers survived.
+    const status = ANSWER_STATUSES.includes(body.status as any)
+      ? body.status
+      : body.selected_answer
+        ? 'answered'
+        : 'not_answered';
 
-    if (error) throw new Error(error.message);
-    return { saved: true };
+    const row: Record<string, any> = {
+      attempt_id: attemptId,
+      question_id: body.question_id,
+      selected_answer: body.selected_answer,
+      time_spent_seconds: Math.max(0, Number(body.time_spent_seconds) || 0),
+    };
+    if (this.hasAnswerStatus !== false) row.status = status;
+
+    const { error } = await supabase
+      .from('answers')
+      .upsert(row, { onConflict: 'attempt_id,question_id' });
+
+    if (error) {
+      // The palette column is a nice-to-have; losing the answer itself is not.
+      // On a database that has not run migration 005 yet, save it without.
+      if (this.hasAnswerStatus === null && this.isMissingSchema(error)) {
+        this.hasAnswerStatus = false;
+        this.warnMigrationMissing('answers.status');
+        return this.saveAnswer(attemptId, studentId, body);
+      }
+      throw new Error(error.message);
+    }
+
+    if (this.hasAnswerStatus === null) this.hasAnswerStatus = true;
+    return { saved: true, status };
+  }
+
+  /**
+   * PROCTORING: record one rule violation against the attempt.
+   *
+   * The strike count is held server-side — a student who reloads the tab does
+   * not get a fresh set of lives. On the third strike the attempt is graded and
+   * closed immediately, recorded as an auto-submission.
+   */
+  async logViolation(
+    attemptId: string,
+    studentId: string,
+    body: { type?: string; detail?: string },
+  ) {
+    const { data: attempt } = await supabase
+      .from('attempts')
+      .select('id, test_id, status, started_at, student_id')
+      .eq('id', attemptId)
+      .eq('student_id', studentId)
+      .single();
+
+    if (!attempt) throw new NotFoundException('Attempt not found');
+
+    // A violation after submission is noise, not a strike.
+    if (attempt.status === 'submitted') {
+      return { terminated: true, strikes: VIOLATION_LIMIT, limit: VIOLATION_LIMIT };
+    }
+
+    const { error } = await supabase.from('attempt_violations').insert({
+      attempt_id: attemptId,
+      student_id: studentId,
+      type: (body?.type || 'unknown').slice(0, 64),
+      detail: body?.detail ? String(body.detail).slice(0, 500) : null,
+    });
+
+    if (error) {
+      // Without migration 005 there is nowhere to record strikes. Fall back to
+      // the client's own counter rather than 500-ing mid-exam.
+      if (this.isMissingSchema(error)) {
+        if (this.hasViolationsTable === null) {
+          this.hasViolationsTable = false;
+          this.warnMigrationMissing('attempt_violations');
+        }
+        return { terminated: false, strikes: 0, limit: VIOLATION_LIMIT, degraded: true };
+      }
+      throw new Error(error.message);
+    }
+
+    this.hasViolationsTable = true;
+
+    const { count } = await supabase
+      .from('attempt_violations')
+      .select('*', { count: 'exact', head: true })
+      .eq('attempt_id', attemptId);
+
+    const strikes = count ?? 0;
+    const terminated = strikes >= VIOLATION_LIMIT;
+
+    if (terminated) {
+      this.logger.warn(`Attempt ${attemptId} terminated after ${strikes} violations.`);
+      // Grade what they have rather than leaving the attempt dangling open.
+      await this.gradeAndFinalise(attempt as any, true).catch((e) =>
+        this.logger.error(`Failed to finalise terminated attempt ${attemptId}: ${e?.message}`),
+      );
+    }
+
+    return { terminated, strikes, limit: VIOLATION_LIMIT };
   }
 
   /**

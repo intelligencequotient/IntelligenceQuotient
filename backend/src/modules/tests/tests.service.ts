@@ -7,7 +7,11 @@ export class TestsService {
   async findAll(teacherId: string, status?: string) {
     let query = supabase
       .from('tests')
-      .select('id, title, description, subject, t_type, status, duration_minutes, total_marks, negative_marking, negative_marks, created_at, created_by')
+      .select(`
+        id, title, description, subject, t_type, status, duration_minutes,
+        total_marks, negative_marking, negative_marks, created_at, created_by,
+        test_teachers(teacher_id, subject, users(id, full_name, email))
+      `)
       .order('created_at', { ascending: false });
 
     if (status) query = query.eq('status', status);
@@ -19,10 +23,49 @@ export class TestsService {
 
   /** Create a new test (starts as 'draft') */
   async create(body: any, teacherId: string) {
+    // Strip frontend-only field before inserting
+    const { teacher_ids, assigned_to, ...testBody } = body as any;
+
     const { data, error } = await supabase
       .from('tests')
-      .insert({ ...body, created_by: teacherId, status: 'draft' })
+      .insert({ ...testBody, created_by: teacherId, status: 'draft' })
       .select()
+      .single();
+    if (error) throw new Error(error.message);
+
+    // Optionally assign teachers right away
+    const ids: string[] = Array.isArray(teacher_ids) ? teacher_ids : [];
+    if (ids.length > 0) {
+      await supabase.from('test_teachers').insert(
+        ids.map(tid => ({ test_id: data.id, teacher_id: tid }))
+      );
+    }
+
+    return data;
+  }
+
+  /** [Admin] Set the full list of teachers assigned to a test (replaces previous list) */
+  async assignTeachers(testId: string, teacherIds: string[]) {
+    // Delete existing assignments for this test
+    const { error: delError } = await supabase
+      .from('test_teachers')
+      .delete()
+      .eq('test_id', testId);
+    if (delError) throw new Error(delError.message);
+
+    // Insert the new list (empty array = unassign all)
+    if (teacherIds.length > 0) {
+      const { error: insError } = await supabase
+        .from('test_teachers')
+        .insert(teacherIds.map(tid => ({ test_id: testId, teacher_id: tid })));
+      if (insError) throw new Error(insError.message);
+    }
+
+    // Return updated test with teachers
+    const { data, error } = await supabase
+      .from('tests')
+      .select('id, title, test_teachers(teacher_id, users(id, full_name, email))')
+      .eq('id', testId)
       .single();
     if (error) throw new Error(error.message);
     return data;
@@ -78,13 +121,13 @@ export class TestsService {
       .from('test_questions')
       .select('question_id, questions(subject)')
       .eq('test_id', testId);
-      
+
     const existingIds = (existingTestQuestions || []).map(tq => tq.question_id);
 
     if (user && user.role === 'teacher' && user.subject && user.subject !== 'All') {
       const addedIds = questionIds.filter(id => !existingIds.includes(id));
       const removedIds = existingIds.filter(id => !questionIds.includes(id));
-      
+
       if (addedIds.length > 0) {
         const { data: qData, error: qError } = await supabase.from('questions').select('subject').in('id', addedIds);
         if (qError) throw new BadRequestException('Error validating added questions');
@@ -92,7 +135,7 @@ export class TestsService {
           throw new BadRequestException(`Access denied: You can only add ${user.subject} questions.`);
         }
       }
-      
+
       if (removedIds.length > 0) {
         const { data: qData, error: qError } = await supabase.from('questions').select('subject').in('id', removedIds);
         if (qError) throw new BadRequestException('Error validating removed questions');
@@ -174,14 +217,31 @@ export class TestsService {
       }
     }
 
-    if (!assignments.length) {
+    // A student in two of the selected batches must still end up with exactly
+    // one assignment row — `startAttempt` reads this per (test, student), and a
+    // duplicate used to surface as "You are not assigned to this test".
+    const deduped = this.dedupeAssignments(assignments);
+
+    if (!deduped.length) {
       throw new BadRequestException('No students found in the selected batches');
     }
 
-    const { error } = await supabase.from('test_assignments').insert(assignments);
+    // Upsert so re-assigning an existing test just moves the window.
+    const { error } = await supabase
+      .from('test_assignments')
+      .upsert(deduped, { onConflict: 'test_id,student_id' });
     if (error) throw new Error(error.message);
 
-    return { message: `Test assigned to ${assignments.length} students` };
+    return { message: `Test assigned to ${deduped.length} students` };
+  }
+
+  /** Collapses assignment rows to one per student, keeping the first batch seen. */
+  private dedupeAssignments(rows: any[]): any[] {
+    const byStudent = new Map<string, any>();
+    for (const row of rows) {
+      if (!byStudent.has(row.student_id)) byStudent.set(row.student_id, row);
+    }
+    return [...byStudent.values()];
   }
 
   /** Get tests available for a student (based on their assignment) */
@@ -358,7 +418,7 @@ export class TestsService {
     subject?: string;
   }, user: any) {
     const teacherId = user.id;
-    
+
     // Validate question subjects if restricted
     if (body.question_ids && body.question_ids.length > 0) {
       if (user && user.role === 'teacher' && user.subject && user.subject !== 'All') {
@@ -366,7 +426,7 @@ export class TestsService {
           .from('questions')
           .select('subject')
           .in('id', body.question_ids);
-        
+
         if (qError) throw new BadRequestException('Error validating questions');
         if (qData.some(q => q.subject !== user.subject)) {
           throw new BadRequestException(`Access denied: You can only add ${user.subject} questions.`);
@@ -427,8 +487,11 @@ export class TestsService {
         }
       }
 
-      if (assignments.length > 0) {
-        const { error: assignError } = await supabase.from('test_assignments').insert(assignments);
+      const deduped = this.dedupeAssignments(assignments);
+      if (deduped.length > 0) {
+        const { error: assignError } = await supabase
+          .from('test_assignments')
+          .upsert(deduped, { onConflict: 'test_id,student_id' });
         if (assignError) throw new Error(`Failed to assign tests: ${assignError.message}`);
       }
     }

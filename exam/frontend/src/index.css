@@ -207,6 +207,12 @@ body {
 .exam-terminated.error h2 { color: #ef4444; }
 .exam-terminated button { margin-top: 20px; padding: 10px 20px; background: #1e293b; color: white; border: none; border-radius: 4px; cursor: pointer; }
 
+/* Answer failed to reach the server — the student must know immediately. */
+.exam-save-error {
+  padding: 10px 30px; background: #fef2f2; color: #b91c1c;
+  border-bottom: 2px solid #ef4444; font-weight: 600; font-size: 14px;
+}
+
 .subject-tabs { display: flex; background: #f1f5f9; border-bottom: 2px solid #3b82f6; padding: 0 30px; gap: 5px; }
 .subj-tab { padding: 10px 20px; border: none; background: #e2e8f0; color: #475569; font-weight: 600; cursor: pointer; border-radius: 8px 8px 0 0; margin-top: 10px; transition: all 0.2s; }
 .subj-tab:hover { background: #cbd5e1; }

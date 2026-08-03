@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useParams } from 'react-router-dom';
 import { apiClient, captureTokenFromUrl, getToken } from '../api/client';
 import ViolationMonitor from '../components/ViolationMonitor';
@@ -8,6 +8,7 @@ import QuestionPalette from '../components/QuestionPalette';
 import ActionBar from '../components/ActionBar';
 import SubmitConfirmModal from '../components/SubmitConfirmModal';
 import { jeeMainMockQuestions, jeeAdvMockQuestions } from '../data/jeeMockData';
+import { normalisePaper, subjectsInPaper, sectionsInSubject } from '../lib/questionFormat';
 import '../index.css';
 
 const ExamShell = () => {
@@ -31,9 +32,13 @@ const ExamShell = () => {
   const submittingRef = useRef(false);
   const questionEnteredAt = useRef(Date.now());
   const [lockAcquired, setLockAcquired] = useState(false);
-  const [activeSubject, setActiveSubject] = useState('Physics');
-  const [activeSection, setActiveSection] = useState('A');
+  // Tabs are built from the paper the teacher actually assembled, not from a
+  // fixed Physics/Chemistry/Mathematics list — a single-subject or Biology test
+  // used to render an empty palette because nothing matched the default tab.
+  const [activeSubject, setActiveSubject] = useState(null);
+  const [activeSection, setActiveSection] = useState(null);
   const [hasStarted, setHasStarted] = useState(false);
+  const [saveError, setSaveError] = useState('');
 
   // Lift the access token out of the URL fragment before anything else runs.
   useEffect(() => {
@@ -50,11 +55,12 @@ const ExamShell = () => {
     const activeLock = localStorage.getItem(lockKey);
     const now = Date.now();
     
-    if (activeLock && now - parseInt(activeLock) < 5000) {
-      alert("This exam is already running in another tab.");
-      window.close();
-      return;
-    }
+    // TEMPORARILY DISABLED FOR DEVELOPMENT
+    // if (activeLock && now - parseInt(activeLock) < 5000) {
+    //   alert("This exam is already running in another tab.");
+    //   window.close();
+    //   return;
+    // }
     
     localStorage.setItem(lockKey, now.toString());
     setLockAcquired(true);
@@ -86,7 +92,10 @@ const ExamShell = () => {
           examType: isMain ? 'main' : 'advanced',
           isPreview: true,
         });
-        setQuestions(isMain ? jeeMainMockQuestions : jeeAdvMockQuestions);
+        const mockPaper = isMain ? jeeMainMockQuestions : jeeAdvMockQuestions;
+        setQuestions(mockPaper);
+        setActiveSubject(mockPaper[0]?.subject ?? null);
+        setActiveSection(mockPaper[0]?.section ?? null);
         setTimeLeft(180 * 60);
         setLoading(false);
         return;
@@ -99,50 +108,54 @@ const ExamShell = () => {
         return;
       }
 
-      // `sessionId` in the route is the test id at this point; the server
-      // creates or resumes the session and returns its real id.
-      const startRes = await apiClient.post(`/exam/${sessionId}/start`);
-      const realSessionId = startRes.sessionId;
+      // Call the real attempt start endpoint
+      const startRes = await apiClient.post(`/attempts/start/${sessionId}`);
+      const realSessionId = startRes.attemptId;
+
+      // Fetch test details for UI
+      const testDetails = await apiClient.get(`/tests/${sessionId}`);
 
       setExamData({
-        ...startRes.testDetails,
+        ...testDetails,
         realSessionId,
-        examType: 'main',
+        examType: testDetails.t_type || 'main',
         isPreview: false,
       });
 
-      // The real paper, with no answer key attached.
-      const paper = await apiClient.get(`/exam/session/${realSessionId}/questions`);
-      setQuestions(paper || []);
+      // Fetch questions using the testId. The bank speaks `q_type`
+      // (single_correct / multi_correct / integer) while the UI renders on
+      // `type` (mcq / msq / nat) — normalisePaper bridges the two, and without
+      // it the answer options never rendered at all.
+      const rawPaper = await apiClient.get(`/tests/${sessionId}/questions`);
+      const paper = normalisePaper(rawPaper);
+
+      if (!paper.length) {
+        setFatalError('This test has no questions yet. Please contact your teacher.');
+        setLoading(false);
+        return;
+      }
+
+      setQuestions(paper);
+      setActiveSubject(paper[0].subject);
+      setActiveSection(paper[0].section);
 
       // Rehydrate a resumed session.
-      if (startRes.savedResponses?.length && paper?.length) {
+      if (startRes.savedAnswers?.length) {
         const indexByQuestionId = new Map(paper.map((q, idx) => [q.id, idx]));
         const restored = {};
-        for (const saved of startRes.savedResponses) {
+        for (const saved of startRes.savedAnswers) {
           const idx = indexByQuestionId.get(saved.question_id);
           if (idx !== undefined) {
-            restored[idx] = { ...(saved.selected_answer || {}), status: saved.status };
+            restored[idx] = { ...(saved.selected_answer || {}), status: saved.status || 'answered' };
           }
         }
         setResponses(restored);
       }
 
-      const updateHeartbeat = async () => {
-        try {
-          const hb = await apiClient.get(`/exam/session/${realSessionId}/heartbeat`);
-          setTimeLeft(hb.remainingSeconds);
-          if (hb.status !== 'in_progress') {
-            clearInterval(heartbeatRef.current);
-            setIsSubmitted(true);
-          }
-        } catch (e) {
-          console.error('Heartbeat failed', e);
-        }
-      };
-
-      await updateHeartbeat();
-      heartbeatRef.current = setInterval(updateHeartbeat, 5000);
+      // Removed server heartbeat for now, rely on visual timer.
+      if (startRes.timeLeftSeconds !== undefined) {
+        setTimeLeft(startRes.timeLeftSeconds);
+      }
     } catch (err) {
       setFatalError(err.message || 'Error initializing exam');
     } finally {
@@ -151,7 +164,7 @@ const ExamShell = () => {
   };
 
   useEffect(() => {
-    return () => clearInterval(heartbeatRef.current);
+    // No heartbeat interval needed anymore
   }, []);
 
   // Restart the per-question stopwatch whenever the student moves.
@@ -173,10 +186,10 @@ const ExamShell = () => {
 
   // Bug #10 fix: auto-submit when timer reaches 0
   useEffect(() => {
-    if (timeLeft === 0 && hasStarted && !loading && !isSubmitted && !isTerminated) {
+    if (timeLeft === 0 && hasStarted && !loading && !isSubmitted && !isTerminated && !fatalError) {
       handleFinalSubmit(true);
     }
-  }, [timeLeft, hasStarted, loading, isSubmitted, isTerminated]);
+  }, [timeLeft, hasStarted, loading, isSubmitted, isTerminated, fatalError]);
 
   const handleResponseChange = async (questionId, responsePayload, status) => {
     // Bug #3 fix: when payload is null (clear), don't spread old keys
@@ -188,15 +201,22 @@ const ExamShell = () => {
     if (!examData?.realSessionId) return;
 
     try {
-      await apiClient.post(`/exam/session/${examData.realSessionId}/response`, {
+      await apiClient.patch(`/attempts/${examData.realSessionId}/answer`, {
         question_id: questionId,
         selected_answer: responsePayload,
         status: status,
-        // Real elapsed time for this question since it was opened.
         time_spent_seconds: Math.max(0, Math.round((Date.now() - questionEnteredAt.current) / 1000)),
       });
+      setSaveError('');
     } catch (e) {
       console.error('Failed to save response', e);
+      // A failed save used to be swallowed into the console: the student kept
+      // answering a paper the server was no longer recording.
+      setSaveError(
+        e.status === 401
+          ? 'Your session expired — this answer was NOT saved. Relaunch the test from your dashboard.'
+          : 'This answer could not be saved. Check your connection and re-select it.',
+      );
     }
   };
 
@@ -211,9 +231,8 @@ const ExamShell = () => {
     }
 
     try {
-      // The server grades against the stored answer key and returns the score.
       const summary = await apiClient.post(
-        `/exam/session/${examData.realSessionId}/submit`,
+        `/attempts/${examData.realSessionId}/submit`,
         { autoSubmitted: auto },
       );
       setResult(summary);
@@ -224,11 +243,17 @@ const ExamShell = () => {
     }
   };
 
-  // Bug #2 support: stable callback ref for ViolationMonitor
   const handleViolationLimit = useCallback(() => {
     setIsTerminated(true);
-    clearInterval(heartbeatRef.current);
   }, []);
+
+  // Navigation structure comes from the paper, so it matches whatever the
+  // teacher assembled — one subject, four subjects, MCQ-only, mixed, anything.
+  const subjects = useMemo(() => subjectsInPaper(questions), [questions]);
+  const sections = useMemo(
+    () => sectionsInSubject(questions, activeSubject),
+    [questions, activeSubject],
+  );
 
   if (!lockAcquired) return null;
 
@@ -296,33 +321,37 @@ const ExamShell = () => {
         </div>
       )}
       <ExamHeader examData={examData} timeLeft={timeLeft} />
-      
-      {/* Subject Tabs (JEE Format) */}
-      <div className="subject-tabs">
-        {['Physics', 'Chemistry', 'Mathematics'].map(subj => (
-          <button 
-            key={subj} 
-            className={`subj-tab ${activeSubject === subj ? 'active' : ''}`}
-            onClick={() => {
-              setActiveSubject(subj);
-              // Jump to first question of the subject
-              const firstQIdx = questions.findIndex(q => q.subject === subj);
-              if (firstQIdx !== -1) {
-                setCurrentQ(firstQIdx);
-                if (examData?.examType === 'main') setActiveSection('A');
-              }
-            }}
-          >
-            {subj}
-          </button>
-        ))}
-      </div>
 
-      {examData?.examType === 'main' && (
+      {saveError && <div className="exam-save-error">{saveError}</div>}
+
+      {/* Subject tabs, built from the paper itself. */}
+      {subjects.length > 1 && (
+        <div className="subject-tabs">
+          {subjects.map(subj => (
+            <button
+              key={subj}
+              className={`subj-tab ${activeSubject === subj ? 'active' : ''}`}
+              onClick={() => {
+                const firstQIdx = questions.findIndex(q => q.subject === subj);
+                setActiveSubject(subj);
+                if (firstQIdx !== -1) {
+                  setCurrentQ(firstQIdx);
+                  setActiveSection(questions[firstQIdx].section);
+                }
+              }}
+            >
+              {subj}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Section tabs only when this subject actually has more than one. */}
+      {sections.length > 1 && (
         <div className="section-tabs">
-          {['A', 'B'].map(sec => (
-            <button 
-              key={sec} 
+          {sections.map(sec => (
+            <button
+              key={sec}
               className={`sec-tab ${activeSection === sec ? 'active' : ''}`}
               onClick={() => {
                 setActiveSection(sec);
@@ -330,7 +359,7 @@ const ExamShell = () => {
                 if (firstQIdx !== -1) setCurrentQ(firstQIdx);
               }}
             >
-              Section {sec} {sec === 'A' ? '(MCQ)' : '(Numerical)'}
+              Section {sec} {sec === 'A' ? '(Objective)' : '(Numerical)'}
             </button>
           ))}
         </div>
@@ -350,17 +379,17 @@ const ExamShell = () => {
             onResponseChange={handleResponseChange} onSubmitClick={() => setShowSubmitModal(true)}
           />
         </div>
-        <QuestionPalette 
-          questions={questions} 
-          responses={responses} 
-          currentQ={currentQ} 
-          activeSubject={activeSubject}
-          activeSection={examData?.examType === 'main' ? activeSection : null}
+        <QuestionPalette
+          questions={questions}
+          responses={responses}
+          currentQ={currentQ}
+          activeSubject={subjects.length > 1 ? activeSubject : null}
+          activeSection={sections.length > 1 ? activeSection : null}
           onNavigate={(idx) => {
             setCurrentQ(idx);
             setActiveSubject(questions[idx].subject);
-            if (examData?.examType === 'main') setActiveSection(questions[idx].section);
-          }} 
+            setActiveSection(questions[idx].section);
+          }}
         />
       </div>
       {showSubmitModal && <SubmitConfirmModal responses={responses} total={questions.length} onCancel={() => setShowSubmitModal(false)} onConfirm={() => handleFinalSubmit(false)} />}

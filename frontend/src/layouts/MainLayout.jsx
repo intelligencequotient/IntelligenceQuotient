@@ -21,6 +21,7 @@ const MainLayout = () => {
     { name: 'Chemistry', path: '/student/subject/chemistry', icon: FlaskConical },
     { name: 'Mathematics', path: '/student/subject/math', icon: Calculator },
     { name: 'Lectures', path: '/student/lectures', icon: Video },
+    { name: 'Test Library', path: '/student/test-library', icon: FileText },
     { name: 'Analytics', path: '/student/analytics', icon: Layers },
     { name: 'Leaderboard', path: '/student/leaderboard', icon: Award },
     { name: 'Chat History', path: '/student/doubts', icon: MessageSquare },

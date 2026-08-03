@@ -34,59 +34,112 @@ describe('AttemptsService', () => {
   });
 
   describe('startAttempt', () => {
+    /** Assignment rows come back as a list — a student can be in several batches. */
+    const assignments = (...rows: any[]) => supabaseMock.queueResult('test_assignments', { data: rows });
+
     it('refuses a test the student is not assigned', async () => {
-      supabaseMock.queueResult('test_assignments', { data: null });
+      assignments();
 
       await expect(service.startAttempt(TEST_ID, STUDENT)).rejects.toBeInstanceOf(ForbiddenException);
     });
 
     it('refuses to open before the scheduled start', async () => {
-      supabaseMock.queueResult('test_assignments', {
-        data: {
-          id: 'a1',
-          scheduled_start: new Date(Date.now() + 60 * 60_000).toISOString(),
-          scheduled_end: new Date(Date.now() + 120 * 60_000).toISOString(),
-        },
+      assignments({
+        id: 'a1',
+        scheduled_start: new Date(Date.now() + 60 * 60_000).toISOString(),
+        scheduled_end: new Date(Date.now() + 120 * 60_000).toISOString(),
       });
 
       await expect(service.startAttempt(TEST_ID, STUDENT)).rejects.toThrow(/opens at/i);
     });
 
     it('refuses to open after the window has closed', async () => {
-      supabaseMock.queueResult('test_assignments', {
-        data: {
-          id: 'a1',
-          scheduled_start: new Date(Date.now() - 180 * 60_000).toISOString(),
-          scheduled_end: new Date(Date.now() - 60 * 60_000).toISOString(),
-        },
+      assignments({
+        id: 'a1',
+        scheduled_start: new Date(Date.now() - 180 * 60_000).toISOString(),
+        scheduled_end: new Date(Date.now() - 60 * 60_000).toISOString(),
       });
 
       await expect(service.startAttempt(TEST_ID, STUDENT)).rejects.toThrow(/window .* closed/i);
     });
 
-    it('rejects a second attempt once submitted', async () => {
-      supabaseMock.queueResult('test_assignments', {
-        data: { id: 'a1', scheduled_start: null, scheduled_end: null },
+    // The dashboard listed the test but starting it said "not assigned": a student
+    // in two batches had two assignment rows, and `.single()` errors on the second.
+    it('starts when the student is assigned via more than one batch', async () => {
+      assignments(
+        {
+          id: 'a1',
+          scheduled_start: new Date(Date.now() - 10 * 60_000).toISOString(),
+          scheduled_end: new Date(Date.now() + 10 * 60_000).toISOString(),
+        },
+        {
+          id: 'a2',
+          scheduled_start: new Date(Date.now() - 5 * 60_000).toISOString(),
+          scheduled_end: new Date(Date.now() + 5 * 60_000).toISOString(),
+        },
+      );
+      supabaseMock.queueResult('attempts', { data: null });                    // no prior attempt
+      supabaseMock.queueResult('tests', { data: { duration_minutes: 60 } });
+      supabaseMock.queueResult('attempts', { data: { id: ATTEMPT_ID } });      // insert
+
+      const result = await service.startAttempt(TEST_ID, STUDENT);
+
+      expect(result.attemptId).toBe(ATTEMPT_ID);
+      expect(result.resumed).toBe(false);
+    });
+
+    // Overlapping batch windows merge to the widest: open at the earliest start,
+    // close at the latest end. A student inside either window can sit the test.
+    it('merges several assignment windows into the widest one', async () => {
+      assignments(
+        {
+          id: 'a1',
+          scheduled_start: new Date(Date.now() + 30 * 60_000).toISOString(), // not open yet
+          scheduled_end: new Date(Date.now() + 90 * 60_000).toISOString(),
+        },
+        {
+          id: 'a2',
+          scheduled_start: new Date(Date.now() - 30 * 60_000).toISOString(), // already open
+          scheduled_end: new Date(Date.now() + 30 * 60_000).toISOString(),
+        },
+      );
+      supabaseMock.queueResult('attempts', { data: null });
+      supabaseMock.queueResult('tests', { data: { duration_minutes: 60 } });
+      supabaseMock.queueResult('attempts', { data: { id: ATTEMPT_ID } });
+
+      await expect(service.startAttempt(TEST_ID, STUDENT)).resolves.toMatchObject({
+        attemptId: ATTEMPT_ID,
       });
+    });
+
+    it('rejects a second attempt once submitted', async () => {
+      assignments({ id: 'a1', scheduled_start: null, scheduled_end: null });
       supabaseMock.queueResult('attempts', { data: { id: ATTEMPT_ID, status: 'submitted' } });
 
       await expect(service.startAttempt(TEST_ID, STUDENT)).rejects.toBeInstanceOf(BadRequestException);
     });
 
     it('returns saved answers when resuming an open attempt', async () => {
-      supabaseMock.queueResult('test_assignments', {
-        data: { id: 'a1', scheduled_start: null, scheduled_end: null },
-      });
+      assignments({ id: 'a1', scheduled_start: null, scheduled_end: null });
       supabaseMock.queueResult('attempts', { data: openAttempt(10) });
       supabaseMock.queueResult('tests', { data: { duration_minutes: 60 } });
       supabaseMock.queueResult('answers', {
-        data: [{ question_id: 'q1', selected_answer: { index: 2 }, flagged_for_doubt: true }],
+        data: [
+          {
+            question_id: 'q1',
+            selected_answer: { index: 2 },
+            status: 'answered_marked',
+            flagged_for_doubt: true,
+          },
+        ],
       });
 
       const result = await service.startAttempt(TEST_ID, STUDENT);
 
       expect(result.resumed).toBe(true);
       expect(result.savedAnswers).toHaveLength(1);
+      // The palette state must survive a resume, not just the answer itself.
+      expect(result.savedAnswers[0].status).toBe('answered_marked');
       // ~50 minutes of a 60 minute exam should remain.
       expect(result.timeLeftSeconds).toBeGreaterThan(2900);
       expect(result.timeLeftSeconds).toBeLessThanOrEqual(3000);
@@ -117,9 +170,100 @@ describe('AttemptsService', () => {
         service.saveAnswer(ATTEMPT_ID, STUDENT, {
           question_id: 'q1',
           selected_answer: { index: 1 },
+          status: 'answered_marked',
           time_spent_seconds: 10,
         }),
-      ).resolves.toEqual({ saved: true });
+      ).resolves.toEqual({ saved: true, status: 'answered_marked' });
+    });
+
+    it('falls back to a derived status rather than storing junk', async () => {
+      supabaseMock.queueResult('attempts', { data: openAttempt(5) });
+      supabaseMock.queueResult('tests', { data: { duration_minutes: 60 } });
+      supabaseMock.queueResult('answers', { data: null, error: null });
+
+      await expect(
+        service.saveAnswer(ATTEMPT_ID, STUDENT, {
+          question_id: 'q1',
+          selected_answer: null,
+          status: 'definitely-not-a-status',
+          time_spent_seconds: 10,
+        }),
+      ).resolves.toEqual({ saved: true, status: 'not_answered' });
+    });
+  });
+
+  // Migration 005 adds answers.status and attempt_violations. Until it is run,
+  // the exam must keep working rather than 500-ing on every answer.
+  describe('when migration 005 has not been applied', () => {
+    const missingColumn = { message: 'column answers.status does not exist', code: '42703' };
+    const missingTable = { message: "Could not find the table 'public.attempt_violations'", code: 'PGRST205' };
+
+    it('still saves the answer when answers.status is missing', async () => {
+      supabaseMock.queueResult('attempts', { data: openAttempt(5) });
+      supabaseMock.queueResult('tests', { data: { duration_minutes: 60 } });
+      supabaseMock.queueResult('answers', { data: null, error: missingColumn });
+      // The retry re-reads the window, then writes without the status column.
+      supabaseMock.queueResult('attempts', { data: openAttempt(5) });
+      supabaseMock.queueResult('tests', { data: { duration_minutes: 60 } });
+      supabaseMock.queueResult('answers', { data: null, error: null });
+
+      await expect(
+        service.saveAnswer(ATTEMPT_ID, STUDENT, {
+          question_id: 'q1',
+          selected_answer: { index: 1 },
+          status: 'answered',
+          time_spent_seconds: 10,
+        }),
+      ).resolves.toEqual({ saved: true, status: 'answered' });
+    });
+
+    it('reports violations as degraded rather than failing the request', async () => {
+      supabaseMock.queueResult('attempts', { data: openAttempt(5) });
+      supabaseMock.queueResult('attempt_violations', { data: null, error: missingTable });
+
+      await expect(
+        service.logViolation(ATTEMPT_ID, STUDENT, { type: 'tab_hidden' }),
+      ).resolves.toEqual({ terminated: false, strikes: 0, limit: 3, degraded: true });
+    });
+  });
+
+  describe('logViolation', () => {
+    const queueStrike = (count: number) => {
+      supabaseMock.queueResult('attempts', { data: openAttempt(5) });     // ownership lookup
+      supabaseMock.queueResult('attempt_violations', { data: null });     // insert
+      supabaseMock.queueResult('attempt_violations', { count });          // running total
+    };
+
+    it('warns but does not terminate below the limit', async () => {
+      queueStrike(2);
+
+      await expect(service.logViolation(ATTEMPT_ID, STUDENT, { type: 'tab_hidden' })).resolves.toEqual(
+        { terminated: false, strikes: 2, limit: 3 },
+      );
+    });
+
+    it('terminates and grades the attempt on the third strike', async () => {
+      queueStrike(3);
+      // gradeAndFinalise reads the duration, marking scheme, paper and answers.
+      supabaseMock.queueResult('tests', { data: { duration_minutes: 60 } });
+      supabaseMock.queueResult('tests', { data: { negative_marking: false, negative_marks: 0 } });
+      supabaseMock.queueResult('test_questions', { data: [] });
+      supabaseMock.queueResult('answers', { data: [] });
+      supabaseMock.queueResult('attempts', { data: { id: ATTEMPT_ID } });
+
+      const result = await service.logViolation(ATTEMPT_ID, STUDENT, { type: 'fullscreen_exit' });
+
+      expect(result.terminated).toBe(true);
+      // The attempt must not be left dangling open — it is graded on the spot.
+      expect(srsStub.processAttempt).toHaveBeenCalledWith(ATTEMPT_ID, STUDENT);
+    });
+
+    it("refuses to touch another student's attempt", async () => {
+      supabaseMock.queueResult('attempts', { data: null });
+
+      await expect(
+        service.logViolation(ATTEMPT_ID, 'someone-else', { type: 'tab_hidden' }),
+      ).rejects.toThrow(/not found/i);
     });
   });
 

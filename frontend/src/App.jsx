@@ -29,8 +29,9 @@ const AssessmentArena    = lazy(() => import('./pages/student/AssessmentArena'))
 const PostTestResult     = lazy(() => import('./pages/student/PostTestResult'));
 const AnalyticsHub       = lazy(() => import('./pages/student/AnalyticsHub'));
 const LiveDoubtClient    = lazy(() => import('./pages/student/LiveDoubtClient'));
-const Leaderboard        = lazy(() => import('./pages/student/Leaderboard'));
-const Settings           = lazy(() => import('./pages/Settings'));
+const Leaderboard            = lazy(() => import('./pages/student/Leaderboard'));
+const StudentTestLibrary     = lazy(() => import('./pages/student/TestLibrary'));
+const Settings               = lazy(() => import('./pages/Settings'));
 
 const TeacherDashboard   = lazy(() => import('./pages/teacher/TeacherDashboard'));
 const TestConstructor    = lazy(() => import('./pages/teacher/TestConstructor'));
@@ -82,6 +83,7 @@ function App() {
               <Route path="analytics" element={<AnalyticsHub />} />
               <Route path="doubts" element={<LiveDoubtClient />} />
               <Route path="leaderboard" element={<Leaderboard />} />
+              <Route path="test-library" element={<StudentTestLibrary />} />
               <Route path="lectures" element={<Lectures />} />
               <Route path="settings" element={<Settings />} />
             </Route>

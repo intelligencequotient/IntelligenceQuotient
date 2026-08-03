@@ -25,9 +25,25 @@ export class AttemptsController {
   saveAnswer(
     @Param('id') id: string,
     @CurrentUser() user,
-    @Body() body: { question_id: string; selected_answer: any; time_spent_seconds: number },
+    @Body()
+    body: {
+      question_id: string;
+      selected_answer: any;
+      status?: string;
+      time_spent_seconds: number;
+    },
   ) {
     return this.attemptsService.saveAnswer(id, user.id, body);
+  }
+
+  @ApiOperation({ summary: 'Record a proctoring violation — terminates the attempt on the 3rd' })
+  @Post(':id/violation')
+  logViolation(
+    @Param('id') id: string,
+    @CurrentUser() user,
+    @Body() body: { type?: string; detail?: string },
+  ) {
+    return this.attemptsService.logViolation(id, user.id, body);
   }
 
   @ApiOperation({ summary: 'Toggle flag a question for doubt review' })

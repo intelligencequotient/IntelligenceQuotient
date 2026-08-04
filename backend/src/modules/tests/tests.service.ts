@@ -10,7 +10,8 @@ export class TestsService {
       .select(`
         id, title, description, subject, t_type, status, duration_minutes,
         total_marks, negative_marking, negative_marks, created_at, created_by,
-        test_teachers(teacher_id, subject, users(id, full_name, email))
+        test_teachers(teacher_id, subject, users(id, full_name, email)),
+        test_questions(question_id, questions(*))
       `)
       .order('created_at', { ascending: false });
 
@@ -20,6 +21,7 @@ export class TestsService {
     if (error) throw new Error(error.message);
     return data;
   }
+
 
   /** Create a new test (starts as 'draft') */
   async create(body: any, teacherId: string) {
@@ -108,8 +110,33 @@ export class TestsService {
       const { data: test } = await supabase.from('tests').select('created_by').eq('id', id).single();
       if (test && test.created_by !== user.id) throw new BadRequestException('Only the initiator can delete this test.');
     }
+
+    // Manual cascade delete to satisfy foreign key constraints
+
+    // 1. Delete answers associated with attempts of this test
+    const { data: attempts } = await supabase.from('attempts').select('id').eq('test_id', id);
+    if (attempts && attempts.length > 0) {
+      const attemptIds = attempts.map((a: any) => a.id);
+      // Supabase in() can handle arrays. If too large, it might fail, but fine for typical deletes.
+      await supabase.from('answers').delete().in('attempt_id', attemptIds);
+    }
+
+    // 2. Delete attempts
+    await supabase.from('attempts').delete().eq('test_id', id);
+
+    // 3. Delete assignments
+    await supabase.from('test_assignments').delete().eq('test_id', id);
+
+    // 4. Delete questions association
+    await supabase.from('test_questions').delete().eq('test_id', id);
+
+    // 5. Delete teachers association
+    await supabase.from('test_teachers').delete().eq('test_id', id);
+
+    // Finally, delete the test itself
     const { error } = await supabase.from('tests').delete().eq('id', id);
     if (error) throw new Error(error.message);
+
     return { message: 'Test deleted' };
   }
 
@@ -226,10 +253,23 @@ export class TestsService {
       throw new BadRequestException('No students found in the selected batches');
     }
 
-    // Upsert so re-assigning an existing test just moves the window.
+    // Manually handle upsert to avoid unique constraint requirements:
+    // Delete existing assignments for this test and these students, then insert.
+    const studentIds = deduped.map(d => d.student_id);
+    
+    // Split into smaller chunks if there are many students (PostgREST has URL length limits for .in())
+    // Though usually batch sizes are small enough.
+    if (studentIds.length > 0) {
+      await supabase
+        .from('test_assignments')
+        .delete()
+        .eq('test_id', testId)
+        .in('student_id', studentIds);
+    }
+
     const { error } = await supabase
       .from('test_assignments')
-      .upsert(deduped, { onConflict: 'test_id,student_id' });
+      .insert(deduped);
     if (error) throw new Error(error.message);
 
     return { message: `Test assigned to ${deduped.length} students` };
@@ -489,9 +529,17 @@ export class TestsService {
 
       const deduped = this.dedupeAssignments(assignments);
       if (deduped.length > 0) {
+        const studentIds = deduped.map((d: any) => d.student_id);
+        // Delete existing assignments first, then insert (avoids upsert unique constraint requirement)
+        await supabase
+          .from('test_assignments')
+          .delete()
+          .eq('test_id', testId)
+          .in('student_id', studentIds);
+
         const { error: assignError } = await supabase
           .from('test_assignments')
-          .upsert(deduped, { onConflict: 'test_id,student_id' });
+          .insert(deduped);
         if (assignError) throw new Error(`Failed to assign tests: ${assignError.message}`);
       }
     }

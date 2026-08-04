@@ -331,6 +331,7 @@ const TestInitiation = () => {
     const payload = {
       title: form.title,
       subject: preset ? 'Mixed' : (customSections.length === 1 ? customSections[0].subject : 'Mixed'),
+      t_type: testType,
       duration_minutes: preset ? preset.duration_minutes : Number(customDuration),
       instructions: form.instructions.trim() || autoInstructions,
       status: 'draft',
@@ -430,20 +431,35 @@ const TestInitiation = () => {
                       {assigned.length === 0 ? (
                         <span style={{ fontSize: 12, color: 'var(--text-secondary)', fontStyle: 'italic' }}>Unassigned</span>
                       ) : (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: -6 }}>
-                          {assigned.slice(0, 4).map((teacher, i) => (
-                            <div key={teacher.id} title={teacher.full_name} style={{ marginLeft: i === 0 ? 0 : -8, zIndex: assigned.length - i }}>
-                              <Avatar name={teacher.full_name} size={28} />
-                            </div>
-                          ))}
-                          {assigned.length > 4 && (
-                            <div style={{ marginLeft: -8, width: 28, height: 28, borderRadius: '50%', background: 'var(--bg-surface)', border: '2px solid var(--border-color)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 700, color: 'var(--text-secondary)' }}>
-                              +{assigned.length - 4}
-                            </div>
-                          )}
-                          <span style={{ marginLeft: 10, fontSize: 12, color: 'var(--text-secondary)' }}>
-                            {assigned.length === 1 ? assigned[0].full_name : `${assigned.length} teachers`}
-                          </span>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                            {assigned.map((teacher) => (
+                              <div key={teacher.id} title={teacher.email} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <Avatar name={teacher.full_name} size={24} />
+                                <span style={{ fontSize: 13, color: 'var(--text-primary)', fontWeight: 500 }}>{teacher.full_name}</span>
+                              </div>
+                            ))}
+                          </div>
+                          
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 4, padding: '8px', background: 'var(--bg-surface)', borderRadius: 6, border: '1px solid var(--border-color)' }}>
+                             <div style={{ width: '100%', fontSize: 10, fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: 2, letterSpacing: '0.05em' }}>Questions Progress:</div>
+                             {['Physics', 'Chemistry', 'Mathematics', 'Biology'].map(sub => {
+                                const count = (t.test_questions || []).filter(tq => tq.questions?.subject === sub).length;
+                                const isCustom = t.t_type === 'custom';
+                                const target = t.t_type === 'jee_advanced' ? 18 : (isCustom ? '?' : 30);
+                                
+                                if (sub === 'Biology') return null;
+                                if (isCustom && count === 0) return null;
+                                
+                                const color = count === target && target !== '?' ? '#10b981' : 'var(--text-secondary)';
+                                return (
+                                   <div key={sub} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flex: 1, minWidth: 40, padding: '4px', borderRadius: 4, background: count === target && target !== '?' ? '#ecfdf5' : '#ffffff', border: `1px solid ${count === target && target !== '?' ? '#a7f3d0' : '#e2e8f0'}`, color }}>
+                                     <span style={{ fontSize: 9, fontWeight: 600 }}>{sub.substring(0, 4)}</span>
+                                     <span style={{ fontSize: 11, fontWeight: 700 }}>{count}/{target}</span>
+                                   </div>
+                                )
+                             })}
+                          </div>
                         </div>
                       )}
                     </td>

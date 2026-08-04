@@ -48,7 +48,7 @@ export class QuestionsService {
       query = query.eq('review_status', 'approved');
     }
 
-    if (filters.subject)    query = query.eq('subject', filters.subject);
+    if (filters.subject)    query = query.ilike('subject', filters.subject);
     if (filters.difficulty) query = query.eq('difficulty', filters.difficulty);
     if (filters.q_type)     query = query.eq('q_type', filters.q_type);
     if (filters.topic)      query = query.ilike('topic', `%${filters.topic}%`);

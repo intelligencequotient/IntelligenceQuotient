@@ -71,14 +71,19 @@ cd frontend && npx vitest run
 - **Admin portal**: user management, batch management, test initiation
 
 **Student experience**
-- Dashboard lists assigned tests and launches them; resumes a part-finished attempt with answers, flags and timing restored
+- Dashboard lists assigned tests and launches them; resumes a part-finished attempt with answers, flags, palette state, and timing restored
 - Post-test result: real score, cohort rank/percentile, subject breakdown and full answer review
 - Analytics, Leaderboard, Subject pages and Lectures all read live data
+- Dynamic subject tabs generated based on the exam paper rather than hardcoded defaults
 
 **Secure exam module (`exam/`)**
+- End-to-end admin to student test assignment and secure exam handoff functioning seamlessly
 - Bearer-token auth on every route; the student id comes from the verified token, never the request body
+- Token refresh supported via URL fragment to prevent mid-exam expiration
 - Real question paper from the database (answer key never sent to the client)
-- Server-side grading with negative marking; violations still terminate at three strikes
+- Exam paper dynamically normalizes and renders different question formats (single correct, multi correct, numerical)
+- Server-side grading with negative marking; numerical (NAT) answers graded accurately against their value
+- Violations mapped correctly to the attempt record, terminating at three strikes
 
 **Infra**
 - Dockerfiles + `docker-compose.yml`, GitHub Actions CI (typecheck, lint, tests, image build)

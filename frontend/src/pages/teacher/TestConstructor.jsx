@@ -5,6 +5,16 @@ import { useAppData } from '../../context/AppDataContext';
 import { apiClient } from '../../api/client';
 import './TestConstructor.css';
 
+const MCQ_TYPES = ['mcq', 'single_correct', 'single', 'scq', 'multi_correct', 'multiple_correct', 'multi', 'multiple'];
+const NAT_TYPES = ['nat', 'integer', 'numerical', 'numeric', 'int'];
+
+function getQuestionType(q) {
+  const key = String(q.q_type || q.type || '').trim().toLowerCase();
+  if (MCQ_TYPES.includes(key)) return 'mcq';
+  if (NAT_TYPES.includes(key)) return 'nat';
+  return Array.isArray(q.options) && q.options.length > 0 ? 'mcq' : 'nat';
+}
+
 const TestConstructor = () => {
   const navigate = useNavigate();
   const { testId } = useParams();
@@ -12,7 +22,7 @@ const TestConstructor = () => {
   const [step, setStep] = useState(1);
   const [selectedQuestions, setSelectedQuestions] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
-  
+
   const user = JSON.parse(localStorage.getItem('user') || '{}');
   const userSubject = user.subject && user.subject !== 'All' ? user.subject : null;
 
@@ -39,7 +49,8 @@ const TestConstructor = () => {
     negativeMarks: 1,
     date: '',
     time: '',
-    targetBatches: []
+    targetBatches: [],
+    t_type: 'quiz'
   });
 
   const [existingTest, setExistingTest] = useState(null);
@@ -53,6 +64,7 @@ const TestConstructor = () => {
           ...prev,
           title: data.title,
           subject: data.subject || prev.subject,
+          t_type: data.t_type || 'quiz',
           duration: data.duration_minutes,
           totalMarks: data.total_marks,
           // Read from the real columns, falling back to the old description
@@ -81,11 +93,11 @@ const TestConstructor = () => {
     try {
       let scheduledStart = undefined;
       let scheduledEnd = undefined;
-      
+
       if (testData.date && testData.time) {
         scheduledStart = new Date(`${testData.date}T${testData.time}`).toISOString();
       }
-      
+
       // Default the close of the window to 7 days out when only a start is given,
       // so the backend's scheduled_end check has something meaningful to enforce.
       if (scheduledStart && !scheduledEnd) {
@@ -98,7 +110,7 @@ const TestConstructor = () => {
         title: testData.title || 'Untitled Test',
         description: `Subject: ${testData.subject}`,
         subject: testData.subject,
-        t_type: 'quiz',
+        t_type: testData.t_type,
         duration_minutes: parseInt(testData.duration, 10),
         total_marks: testData.totalMarks,
         status: status,
@@ -110,6 +122,19 @@ const TestConstructor = () => {
         scheduled_start: scheduledStart,
         scheduled_end: scheduledEnd
       };
+
+      if (testData.t_type === 'jee_main' && status === 'published') {
+        const subjects = [...new Set(selectedQuestions.map(q => q.subject))];
+        for (const sub of subjects) {
+          const subQs = selectedQuestions.filter(q => q.subject === sub);
+          const mcqCount = subQs.filter(q => getQuestionType(q) === 'mcq').length;
+          const natCount = subQs.filter(q => getQuestionType(q) === 'nat').length;
+          if (mcqCount !== 20 || natCount !== 10) {
+            showToast(`Cannot publish: ${sub} has ${mcqCount}/20 MCQs and ${natCount}/10 Numericals.`);
+            return;
+          }
+        }
+      }
 
       if (testId) {
         if (isInitiator) {
@@ -139,7 +164,7 @@ const TestConstructor = () => {
       }
 
       await refreshTests();
-      
+
       showToast(`Test ${status === 'draft' ? 'saved as draft' : 'published'} successfully!`);
       setTimeout(() => navigate('/teacher/test-library'), 1500);
     } catch (err) {
@@ -156,9 +181,24 @@ const TestConstructor = () => {
       showToast(`You can only modify ${userSubject} questions.`);
       return;
     }
-    if (selectedQuestions.find(sq => sq.id === q.id)) {
+
+    const isJeeMain = testData.t_type === 'jee_main';
+    const isSelected = selectedQuestions.find(sq => sq.id === q.id);
+
+    if (isSelected) {
       setSelectedQuestions(selectedQuestions.filter(sq => sq.id !== q.id));
     } else {
+      if (isJeeMain) {
+        const subjectQuestions = selectedQuestions.filter(sq => sq.subject === q.subject);
+        const qType = getQuestionType(q);
+        const currentCount = subjectQuestions.filter(sq => getQuestionType(sq) === qType).length;
+        const limit = qType === 'mcq' ? 20 : 10;
+
+        if (currentCount >= limit) {
+          showToast(`Cannot add more than ${limit} ${qType === 'mcq' ? 'MCQ' : 'Numerical'} questions for ${q.subject} in JEE Main pattern.`);
+          return;
+        }
+      }
       setSelectedQuestions([...selectedQuestions, q]);
     }
   };
@@ -216,23 +256,23 @@ const TestConstructor = () => {
             <div className="step-pane step-1">
               <h2>Test Metadata</h2>
               {!isInitiator && (
-                <div style={{background: '#fef3c7', padding: '10px 15px', borderRadius: '8px', color: '#92400e', marginBottom: '15px'}}>
+                <div style={{ background: '#fef3c7', padding: '10px 15px', borderRadius: '8px', color: '#92400e', marginBottom: '15px' }}>
                   <strong>Collaboration Mode:</strong> You can only add or remove questions for your subject. Only the test initiator can edit metadata or delete this test.
                 </div>
               )}
               <div className="form-group">
                 <label>Test Title</label>
-                <input type="text" placeholder="e.g. Weekly Mock Test #4" value={testData.title} onChange={e => setTestData({...testData, title: e.target.value})} disabled={!isInitiator} />
+                <input type="text" placeholder="e.g. Weekly Mock Test #4" value={testData.title} onChange={e => setTestData({ ...testData, title: e.target.value })} disabled={!isInitiator} />
               </div>
-              
+
               <div className="form-group">
                 <label>Subject</label>
                 <div className="subject-chips">
                   {['Physics', 'Chemistry', 'Mathematics', 'Biology'].map(sub => (
-                    <button 
-                      key={sub} 
+                    <button
+                      key={sub}
                       className={`chip ${testData.subject === sub ? 'active' : ''}`}
-                      onClick={() => !userSubject && setTestData({...testData, subject: sub})}
+                      onClick={() => !userSubject && setTestData({ ...testData, subject: sub })}
                       disabled={userSubject && userSubject !== sub}
                       style={userSubject && userSubject !== sub ? { opacity: 0.5, cursor: 'not-allowed' } : {}}
                     >
@@ -245,44 +285,44 @@ const TestConstructor = () => {
               <div className="form-row">
                 <div className="form-group">
                   <label>Duration (mins)</label>
-                  <input type="number" value={testData.duration} onChange={e => setTestData({...testData, duration: e.target.value})} disabled={!isInitiator} />
+                  <input type="number" value={testData.duration} onChange={e => setTestData({ ...testData, duration: e.target.value })} disabled={!isInitiator} />
                 </div>
                 <div className="form-group">
                   <label>Total Marks (Auto-calculated)</label>
-                  <input type="number" value={testData.totalMarks} disabled style={{backgroundColor: '#f1f5f9'}} />
+                  <input type="number" value={testData.totalMarks} disabled style={{ backgroundColor: '#f1f5f9' }} />
                 </div>
               </div>
 
               <div className="form-group toggle-group">
                 <label className="toggle-label">
-                  <input type="checkbox" checked={testData.negativeMarking} onChange={e => setTestData({...testData, negativeMarking: e.target.checked})} disabled={!isInitiator} />
+                  <input type="checkbox" checked={testData.negativeMarking} onChange={e => setTestData({ ...testData, negativeMarking: e.target.checked })} disabled={!isInitiator} />
                   Enable Negative Marking
                 </label>
                 {testData.negativeMarking && (
-                  <input type="number" className="inline-input" value={testData.negativeMarks} onChange={e => setTestData({...testData, negativeMarks: e.target.value})} disabled={!isInitiator} />
+                  <input type="number" className="inline-input" value={testData.negativeMarks} onChange={e => setTestData({ ...testData, negativeMarks: e.target.value })} disabled={!isInitiator} />
                 )}
               </div>
 
               <div className="form-row">
                 <div className="form-group">
                   <label>Schedule Date (Optional)</label>
-                  <input type="date" value={testData.date} onChange={e => setTestData({...testData, date: e.target.value})} disabled={!isInitiator} />
+                  <input type="date" value={testData.date} onChange={e => setTestData({ ...testData, date: e.target.value })} disabled={!isInitiator} />
                 </div>
                 <div className="form-group">
                   <label>Time (Optional)</label>
-                  <input type="time" value={testData.time} onChange={e => setTestData({...testData, time: e.target.value})} disabled={!isInitiator} />
+                  <input type="time" value={testData.time} onChange={e => setTestData({ ...testData, time: e.target.value })} disabled={!isInitiator} />
                 </div>
               </div>
 
               <div className="form-group">
                 <label>Target Batches</label>
-                <select 
-                  multiple 
-                  className="multi-select" 
+                <select
+                  multiple
+                  className="multi-select"
                   value={testData.targetBatches}
                   onChange={e => {
                     const options = Array.from(e.target.selectedOptions, option => option.value);
-                    setTestData({...testData, targetBatches: options});
+                    setTestData({ ...testData, targetBatches: options });
                   }}
                   disabled={!isInitiator}
                 >
@@ -302,23 +342,23 @@ const TestConstructor = () => {
                 <div className="question-bank-panel">
                   <div className="search-bar">
                     <Search size={18} className="search-icon" />
-                    <input 
-                      type="text" 
-                      placeholder="Search question bank..." 
+                    <input
+                      type="text"
+                      placeholder="Search question bank..."
                       value={searchQuery}
                       onChange={e => setSearchQuery(e.target.value)}
                     />
                   </div>
-                  <div className="subject-chips" style={{marginBottom: '15px', display: 'flex', gap: '8px', flexWrap: 'wrap', padding: '0 16px'}}>
-                    <button 
-                      className={`chip ${subjectFilter === '' ? 'active' : ''}`} 
+                  <div className="subject-chips" style={{ marginBottom: '15px', display: 'flex', gap: '8px', flexWrap: 'wrap', padding: '0 16px' }}>
+                    <button
+                      className={`chip ${subjectFilter === '' ? 'active' : ''}`}
                       onClick={() => !userSubject && setSubjectFilter('')}
                       disabled={!!userSubject}
                       style={{ padding: '6px 12px', borderRadius: '16px', border: '1px solid #e2e8f0', background: subjectFilter === '' ? '#6366f1' : '#f8fafc', color: subjectFilter === '' ? '#fff' : '#475569', cursor: userSubject ? 'not-allowed' : 'pointer', opacity: userSubject ? 0.5 : 1 }}
                     >All</button>
                     {['Physics', 'Chemistry', 'Mathematics', 'Biology'].map(sub => (
-                      <button 
-                        key={sub} 
+                      <button
+                        key={sub}
                         className={`chip ${subjectFilter === sub ? 'active' : ''}`}
                         onClick={() => !userSubject && setSubjectFilter(sub)}
                         disabled={userSubject && userSubject !== sub}
@@ -329,16 +369,21 @@ const TestConstructor = () => {
                     ))}
                   </div>
                   <div className="question-list">
-                    {safeQuestions.length === 0 && (
-                      <div style={{padding: '20px', textAlign: 'center', color: '#64748b'}}>
-                        <p>No questions found in the database for the current filters.</p>
-                        <p style={{fontSize: '12px'}}>Debug: subjectFilter="{subjectFilter}", userSubject="{userSubject}"</p>
-                      </div>
-                    )}
-                    {safeQuestions
-                      .filter(q => (q.question_text || q.text || '').toLowerCase().includes(searchQuery.toLowerCase()))
-                      .filter(q => subjectFilter === '' || q.subject === subjectFilter)
-                      .map(q => {
+                    {(() => {
+                      const filteredQs = safeQuestions
+                        .filter(q => (q.question_text || q.text || '').toLowerCase().includes(searchQuery.toLowerCase()))
+                        .filter(q => subjectFilter === '' || (q.subject || '').toLowerCase() === subjectFilter.toLowerCase());
+
+                      if (filteredQs.length === 0) {
+                        return (
+                          <div style={{ padding: '20px', textAlign: 'center', color: '#64748b' }}>
+                            <p>No questions found for the current filters.</p>
+                            <p style={{ fontSize: '12px' }}>Bank total: {safeQuestions.length} | Subject: {subjectFilter || 'All'}</p>
+                          </div>
+                        );
+                      }
+
+                      return filteredQs.map(q => {
                         const isSelected = selectedQuestions.find(sq => sq.id === q.id);
                         return (
                           <div key={q.id} className={`q-card ${isSelected ? 'selected' : ''}`}>
@@ -347,7 +392,7 @@ const TestConstructor = () => {
                               <span className={`q-diff ${q.difficulty ? q.difficulty.toLowerCase() : 'medium'}`}>{q.difficulty || 'Medium'}</span>
                             </div>
                             <p className="q-text">{q.question_text || q.text}</p>
-                            {q.image_url && <img src={q.image_url} alt="Question Diagram" style={{maxWidth: '100%', maxHeight: '150px', borderRadius: '4px', marginTop: '10px'}}/>}
+                            {q.image_url && <img src={q.image_url} alt="Question Diagram" style={{ maxWidth: '100%', maxHeight: '150px', borderRadius: '4px', marginTop: '10px' }} />}
                             <div className="q-card-footer">
                               <span className="q-marks">{q.marks || 4} Marks</span>
                               <button className={`btn-sm ${isSelected ? 'btn-danger' : 'btn-primary'}`} onClick={() => toggleQuestion(q)}>
@@ -355,29 +400,80 @@ const TestConstructor = () => {
                               </button>
                             </div>
                           </div>
-                        )
-                      })
-                    }
+                        );
+                      });
+                    })()}
                   </div>
                 </div>
-                
+
                 <div className="selected-questions-panel">
                   <h3>Selected ({selectedQuestions.length})</h3>
-                  <div className="selected-list">
-                    {selectedQuestions.length === 0 ? (
-                      <p className="empty-state">No questions selected yet.</p>
-                    ) : (
-                      selectedQuestions.map((q, idx) => (
-                        <div key={q.id} className="selected-q-item">
-                          <span className="q-number">{idx + 1}.</span>
-                          <span className="q-snippet">{(q.question_text || q.text || '').substring(0, 40)}...</span>
-                          {(!userSubject || userSubject === q.subject) && (
-                            <button className="icon-btn-danger" onClick={() => toggleQuestion(q)}><Trash2 size={16} /></button>
-                          )}
-                        </div>
-                      ))
-                    )}
-                  </div>
+
+                  {testData.t_type === 'jee_main' ? (
+                    <div className="selected-list">
+                      {['Physics', 'Chemistry', 'Mathematics', 'Biology'].map(sub => {
+                        const subQs = selectedQuestions.filter(q => q.subject === sub);
+                        if (subQs.length === 0 && (!userSubject || userSubject !== sub)) return null;
+
+                        const mcqQs = subQs.filter(q => getQuestionType(q) === 'mcq');
+                        const natQs = subQs.filter(q => getQuestionType(q) === 'nat');
+
+                        return (
+                          <div key={sub} style={{ marginBottom: '20px' }}>
+                            <h4 style={{ fontSize: '14px', color: 'var(--text-primary)', marginBottom: '8px', borderBottom: '1px solid #e2e8f0', paddingBottom: '4px' }}>{sub}</h4>
+
+                            <div style={{ marginBottom: '12px' }}>
+                              <div style={{ fontSize: '12px', fontWeight: '600', color: mcqQs.length === 20 ? '#10b981' : '#6366f1', marginBottom: '6px' }}>
+                                Section A (MCQ): {mcqQs.length} / 20
+                              </div>
+                              {mcqQs.map((q, idx) => (
+                                <div key={q.id} className="selected-q-item">
+                                  <span className="q-number">{idx + 1}.</span>
+                                  <span className="q-snippet">{(q.question_text || q.text || '').substring(0, 30)}...</span>
+                                  {(!userSubject || userSubject === q.subject) && (
+                                    <button className="icon-btn-danger" onClick={() => toggleQuestion(q)}><Trash2 size={16} /></button>
+                                  )}
+                                </div>
+                              ))}
+                              {mcqQs.length === 0 && <p className="empty-state" style={{ fontSize: '12px', margin: '4px 0' }}>No MCQs selected.</p>}
+                            </div>
+
+                            <div>
+                              <div style={{ fontSize: '12px', fontWeight: '600', color: natQs.length === 10 ? '#10b981' : '#6366f1', marginBottom: '6px' }}>
+                                Section B (Numerical): {natQs.length} / 10
+                              </div>
+                              {natQs.map((q, idx) => (
+                                <div key={q.id} className="selected-q-item">
+                                  <span className="q-number">{idx + 1}.</span>
+                                  <span className="q-snippet">{(q.question_text || q.text || '').substring(0, 30)}...</span>
+                                  {(!userSubject || userSubject === q.subject) && (
+                                    <button className="icon-btn-danger" onClick={() => toggleQuestion(q)}><Trash2 size={16} /></button>
+                                  )}
+                                </div>
+                              ))}
+                              {natQs.length === 0 && <p className="empty-state" style={{ fontSize: '12px', margin: '4px 0' }}>No Numerical questions selected.</p>}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  ) : (
+                    <div className="selected-list">
+                      {selectedQuestions.length === 0 ? (
+                        <p className="empty-state">No questions selected yet.</p>
+                      ) : (
+                        selectedQuestions.map((q, idx) => (
+                          <div key={q.id} className="selected-q-item">
+                            <span className="q-number">{idx + 1}.</span>
+                            <span className="q-snippet">{(q.question_text || q.text || '').substring(0, 40)}...</span>
+                            {(!userSubject || userSubject === q.subject) && (
+                              <button className="icon-btn-danger" onClick={() => toggleQuestion(q)}><Trash2 size={16} /></button>
+                            )}
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -391,7 +487,7 @@ const TestConstructor = () => {
                   <h3>{testData.title || 'Untitled Test'}</h3>
                   <span className="subject-badge">{testData.subject}</span>
                 </div>
-                
+
                 <div className="summary-grid">
                   <div className="summary-item">
                     <span className="label">Duration</span>
@@ -427,7 +523,7 @@ const TestConstructor = () => {
               </div>
             </div>
           )}
-          
+
           <div className="step-navigation">
             {step > 1 ? (
               <button className="btn-outline" onClick={handlePrev}><ChevronLeft size={18} /> Previous</button>

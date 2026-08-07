@@ -194,8 +194,8 @@ const LiveDoubtClient = () => {
     if (teachers.length === 0) {
       setLoadingTeachers(true);
       try {
-        const result = await apiClient.get('/users/teachers');
-        setTeachers(Array.isArray(result) ? result : []);
+        // Students see the reduced directory: names only, no staff emails.
+        setTeachers(await apiClient.getList('/users/teachers/directory'));
       } catch (e) {
         console.error('Failed to load teachers', e);
         showToast('Could not load teachers. Please try again.');

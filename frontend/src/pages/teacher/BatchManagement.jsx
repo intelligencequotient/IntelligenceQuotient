@@ -3,7 +3,7 @@ import {
   Plus, Users as UsersIcon, Calendar, Search, X, ChevronRight, ChevronDown,
   Trash2, UserPlus, Pencil,
 } from 'lucide-react';
-import { apiClient } from '../../api/client';
+import { apiClient, toList } from '../../api/client';
 import './BatchManagement.css';
 
 const SUBJECTS = ['All', 'Physics', 'Chemistry', 'Mathematics', 'Biology'];
@@ -46,10 +46,10 @@ const BatchManagement = () => {
       apiClient.get('/users/students'),
     ]);
 
-    if (batchRes.status === 'fulfilled') setBatches(batchRes.value || []);
+    if (batchRes.status === 'fulfilled') setBatches(toList(batchRes.value));
     else showToast(batchRes.reason?.message || 'Could not load batches', 'error');
 
-    if (studentRes.status === 'fulfilled') setAllStudents(studentRes.value || []);
+    if (studentRes.status === 'fulfilled') setAllStudents(toList(studentRes.value));
     setLoading(false);
   }, []);
 

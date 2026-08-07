@@ -169,45 +169,81 @@ export class DoubtsService {
     return data;
   }
 
-  /** Student's own doubts history */
-  async getMyDoubts(studentId: string) {
-    const { data, error } = await supabase
+  /** Student's own doubts history (most recent first, paged). */
+  async getMyDoubts(studentId: string, page = 1, limit = 50) {
+    const { from, to, safePage, safeLimit } = this.paginate(page, limit);
+
+    const { data, error, count } = await supabase
       .from('doubts')
-      .select(`
+      .select(
+        `
         id, status, created_at, resolved_at, accepted_by,
         questions(id, question_text, subject, topic),
         teacher:users!doubts_accepted_by_fkey(id, full_name)
-      `)
+      `,
+        { count: 'exact' },
+      )
       .eq('student_id', studentId)
-      .order('created_at', { ascending: false });
+      .order('created_at', { ascending: false })
+      .range(from, to);
     if (error) throw new Error(error.message);
-    return data;
+
+    return this.page(data, count, safePage, safeLimit);
   }
 
   /**
    * Teacher: doubts queue — unclaimed pending doubts plus the caller's own.
    * Admins see everything.
+   *
+   * Paged: an institute-wide queue outgrows a single response quickly, and the
+   * unbounded version returned whatever PostgREST felt like capping it at.
    */
-  async findAll(user: Requester, status?: string) {
+  async findAll(user: Requester, status?: string, page = 1, limit = 50) {
+    const { from, to, safePage, safeLimit } = this.paginate(page, limit);
+
     let query = supabase
       .from('doubts')
-      .select(`
+      .select(
+        `
         id, status, created_at, resolved_at,
         student:users!doubts_student_id_fkey(id, full_name),
         questions(id, question_text, subject, topic),
         teacher:users!doubts_accepted_by_fkey(id, full_name)
-      `)
-      .order('created_at', { ascending: true });
+      `,
+        { count: 'exact' },
+      )
+      .order('created_at', { ascending: true })
+      .range(from, to);
 
     if (user.role !== 'admin') {
+      // `user.id` is a verified UUID from the auth guard, so it cannot carry
+      // PostgREST filter syntax — but keep the shape obvious for future edits.
       query = query.or(`accepted_by.is.null,accepted_by.eq.${user.id}`);
     }
 
     if (status) query = query.eq('status', status);
 
-    const { data, error } = await query;
+    const { data, error, count } = await query;
     if (error) throw new Error(error.message);
-    return data;
+    return this.page(data, count, safePage, safeLimit);
+  }
+
+  private paginate(page?: number, limit?: number) {
+    const safePage = Math.max(Number(page) || 1, 1);
+    const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 200);
+    const from = (safePage - 1) * safeLimit;
+    return { from, to: from + safeLimit - 1, safePage, safeLimit };
+  }
+
+  private page(data: any[] | null, count: number | null, page: number, limit: number) {
+    const total = count ?? 0;
+    return {
+      data: data || [],
+      total,
+      page,
+      limit,
+      totalPages: Math.max(1, Math.ceil(total / limit)),
+    };
   }
 
   /** Get one doubt */
@@ -286,7 +322,13 @@ export class DoubtsService {
 
   // ── Chat ────────────────────────────────────────────────────────────────────
 
-  /** Get all chat messages for a doubt */
+  /**
+   * Get all chat messages for a doubt.
+   *
+   * Capped rather than paged: a chat thread is read newest-context-first and
+   * 500 messages is far more than any real doubt accumulates, but the cap keeps
+   * one pathological thread from being able to stall the room for everyone.
+   */
   async getMessages(doubtId: string, user: Requester) {
     await this.assertCanRead(doubtId, user);
 
@@ -294,7 +336,8 @@ export class DoubtsService {
       .from('doubt_messages')
       .select('id, message_text, sent_at, users(id, full_name, role)')
       .eq('doubt_id', doubtId)
-      .order('sent_at', { ascending: true });
+      .order('sent_at', { ascending: true })
+      .limit(500);
     if (error) throw new Error(error.message);
     return data;
   }
@@ -363,11 +406,22 @@ export class DoubtsService {
     return { ...data, imageUrl };
   }
 
-  /** Delete a doubt (only admin, teacher or the student who created it can delete) */
+  /**
+   * Delete a doubt.
+   *
+   * Admins, the student who raised it, and the teacher actually handling it —
+   * the old check allowed *any* teacher, so a doubt could be deleted by someone
+   * with no connection to the conversation, taking the chat history with it.
+   */
   async remove(doubtId: string, user: Requester) {
     const doubt = await this.loadOwnership(doubtId);
-    if (user.role !== 'admin' && user.role !== 'teacher' && doubt.student_id !== user.id) {
-      throw new ForbiddenException('Only admins, teachers, or the creator can delete this doubt.');
+    const isOwner = doubt.student_id === user.id;
+    const isHandler = Boolean(doubt.accepted_by) && doubt.accepted_by === user.id;
+
+    if (user.role !== 'admin' && !isOwner && !isHandler) {
+      throw new ForbiddenException(
+        'Only an admin, the student who raised this doubt, or the teacher handling it can delete it.',
+      );
     }
 
     // Delete associated messages first to satisfy foreign key constraints

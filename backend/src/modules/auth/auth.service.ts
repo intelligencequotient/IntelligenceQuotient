@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
-import { supabase } from '../../config/supabase.config';
+import { supabase, supabaseAuth } from '../../config/supabase.config';
 import { verifySupabaseToken } from '../../common/auth/supabase-jwt';
 
 @Injectable()
@@ -7,10 +7,14 @@ export class AuthService {
   private readonly logger = new Logger(AuthService.name);
   /**
    * Login: Authenticates user via Supabase Auth and returns JWT tokens + profile.
+   *
+   * Credentials go through the anon client, never the service-role one: signing
+   * in mutates the client's own session, and the service-role client is a
+   * singleton shared by every concurrent request on the instance.
    */
   async login(email: string, password: string) {
     // Step 1: Sign in via Supabase Auth
-    const { data, error } = await supabase.auth.signInWithPassword({
+    const { data, error } = await supabaseAuth.auth.signInWithPassword({
       email,
       password,
     });
@@ -52,7 +56,7 @@ export class AuthService {
    * Refresh: Use refresh token to get a new access token.
    */
   async refresh(refreshToken: string) {
-    const { data, error } = await supabase.auth.refreshSession({
+    const { data, error } = await supabaseAuth.auth.refreshSession({
       refresh_token: refreshToken,
     });
 

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { User, Bell, Shield, Palette } from 'lucide-react';
-import { apiClient } from '../api/client';
+import { apiClient, passwordProblem } from '../api/client';
 import './Settings.css';
 
 const Settings = () => {
@@ -48,8 +48,9 @@ const Settings = () => {
       showToast('New passwords do not match!');
       return;
     }
-    if (!passwords.newPassword || passwords.newPassword.length < 6) {
-      showToast('Password must be at least 6 characters long.');
+    const problem = passwordProblem(passwords.newPassword);
+    if (problem) {
+      showToast(problem);
       return;
     }
     try {

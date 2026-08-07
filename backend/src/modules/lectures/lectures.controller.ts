@@ -1,10 +1,21 @@
-import { Controller, Get, Post, Delete, Param, Body, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { LecturesService } from './lectures.service';
 import { SupabaseAuthGuard } from '../../common/guards/supabase-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { CreateLectureDto, LectureQueryDto } from './dto/lecture.dto';
 
 @ApiTags('Lectures')
 @ApiBearerAuth()
@@ -15,27 +26,27 @@ export class LecturesController {
 
   @ApiOperation({ summary: 'List lectures (filterable by subject/topic)' })
   @Get()
-  findAll(@Query('subject') subject?: string, @Query('topic') topic?: string) {
-    return this.lecturesService.findAll({ subject, topic });
+  findAll(@Query() query: LectureQueryDto) {
+    return this.lecturesService.findAll(query);
+  }
+
+  @ApiOperation({ summary: 'Get ordered syllabus for a subject' })
+  @Get('syllabus/:subject')
+  getSyllabus(@Param('subject') subject: string) {
+    return this.lecturesService.getSyllabus(subject);
   }
 
   @ApiOperation({ summary: '[Teacher] Add a lecture' })
   @UseGuards(RolesGuard) @Roles('teacher', 'admin')
   @Post()
-  create(@Body() body: any, @CurrentUser() user) {
+  create(@Body() body: CreateLectureDto, @CurrentUser() user) {
     return this.lecturesService.create(body, user.id);
   }
 
-  @ApiOperation({ summary: '[Teacher] Delete a lecture' })
+  @ApiOperation({ summary: '[Teacher] Delete a lecture you uploaded' })
   @UseGuards(RolesGuard) @Roles('teacher', 'admin')
   @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.lecturesService.remove(id);
-  }
-
-  @ApiOperation({ summary: 'Get ordered syllabus for a subject' })
-  @Get('/syllabus/:subject')
-  getSyllabus(@Param('subject') subject: string) {
-    return this.lecturesService.getSyllabus(subject);
+  remove(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user) {
+    return this.lecturesService.remove(id, user);
   }
 }

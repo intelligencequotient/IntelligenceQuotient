@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Plus, Trash2, Users, X, ChevronDown, ChevronUp, UserMinus, UserPlus } from 'lucide-react';
-import { apiClient } from '../../api/client';
+import { apiClient, toList } from '../../api/client';
 
 const AdminBatchManagement = () => {
   const [batches, setBatches] = useState([]);
@@ -28,8 +28,8 @@ const AdminBatchManagement = () => {
         apiClient.get('/batches'),
         apiClient.get('/users/students'),
       ]);
-      setBatches(b.status === 'fulfilled' ? b.value : []);
-      setAllStudents(s.status === 'fulfilled' ? s.value : []);
+      setBatches(b.status === 'fulfilled' ? toList(b.value) : []);
+      setAllStudents(s.status === 'fulfilled' ? toList(s.value) : []);
     } catch { showToast('Failed to load batches', 'error'); }
     finally { setLoading(false); }
   }, []);

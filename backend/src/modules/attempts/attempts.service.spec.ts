@@ -296,8 +296,11 @@ describe('AttemptsService', () => {
       });
       supabaseMock.queueResult('test_questions', { data: opts.testQuestions });
       supabaseMock.queueResult('answers', { data: opts.studentAnswers });
-      // One update per question, then the final attempts update.
-      opts.testQuestions.forEach(() => supabaseMock.queueResult('answers', { data: null }));
+      // Correctness is written back in a single batched upsert, not one call per
+      // question — and only for questions that actually have an answer row.
+      if (opts.studentAnswers.length) {
+        supabaseMock.queueResult('answers', { data: null });
+      }
       supabaseMock.queueResult('attempts', { data: { id: ATTEMPT_ID } });
     };
 
@@ -406,6 +409,94 @@ describe('AttemptsService', () => {
 
       expect(srsStub.processAttempt).toHaveBeenCalledWith(ATTEMPT_ID, STUDENT);
       expect(cacheStub.invalidate).toHaveBeenCalledWith('leaderboard:');
+    });
+
+    /**
+     * Correctness used to be written one UPDATE per question. A 90-question
+     * paper meant 90 sequential round-trips per submit, and a cohort finishing
+     * together turned that into ~90,000 serialised calls.
+     */
+    it('writes every answer’s correctness in one batched call', async () => {
+      const testQuestions = Array.from({ length: 90 }, (_, i) => ({
+        question_id: `q${i}`,
+        marks_override: null,
+        questions: { correct_answer: { index: 0 }, marks: 4 },
+      }));
+
+      queueGrading({
+        testQuestions,
+        studentAnswers: testQuestions.map((tq) => ({
+          question_id: tq.question_id,
+          selected_answer: { index: 0 },
+        })),
+      });
+
+      await service.submitAttempt(ATTEMPT_ID, STUDENT);
+
+      const writes = supabaseMock.calls.filter(
+        (c) => c.table === 'answers' && (c.op === 'upsert' || c.op === 'update'),
+      );
+      expect(writes).toHaveLength(1);
+      expect(writes[0].payload).toHaveLength(90);
+    });
+
+    // Unanswered questions have no row to update, so nothing is written for them.
+    it('writes nothing back when the student answered nothing', async () => {
+      queueGrading({
+        testQuestions: [
+          { question_id: 'q1', marks_override: null, questions: { correct_answer: { index: 0 }, marks: 4 } },
+        ],
+        studentAnswers: [],
+      });
+
+      const result = await service.submitAttempt(ATTEMPT_ID, STUDENT);
+
+      expect(result.unattempted).toBe(1);
+      expect(
+        supabaseMock.calls.filter((c) => c.table === 'answers' && c.op === 'upsert'),
+      ).toHaveLength(0);
+    });
+
+    /**
+     * Two submits can race — a student's click landing at the same moment as the
+     * expiry sweeper. The status update is conditional on the attempt still
+     * being in progress, so only the winner runs the post-submit side effects.
+     */
+    it('does not re-run post-submit work when another submit won the race', async () => {
+      supabaseMock.queueResult('attempts', { data: openAttempt(10) });
+      supabaseMock.queueResult('tests', { data: { duration_minutes: 60 } });
+      supabaseMock.queueResult('tests', { data: { negative_marking: false, negative_marks: 0 } });
+      supabaseMock.queueResult('test_questions', {
+        data: [
+          { question_id: 'q1', marks_override: null, questions: { correct_answer: { index: 0 }, marks: 4 } },
+        ],
+      });
+      supabaseMock.queueResult('answers', { data: [{ question_id: 'q1', selected_answer: { index: 0 } }] });
+      supabaseMock.queueResult('answers', { data: null });
+      // The conditional update matches no row: someone else already finalised it.
+      supabaseMock.queueResult('attempts', { data: null });
+
+      const result = await service.submitAttempt(ATTEMPT_ID, STUDENT);
+
+      // The caller still gets a coherent result…
+      expect(result.score).toBe(4);
+      // …but the side effects belong to whoever actually claimed the attempt.
+      expect(srsStub.processAttempt).not.toHaveBeenCalled();
+      expect(cacheStub.invalidate).not.toHaveBeenCalled();
+    });
+
+    // A failure in the analytics write must never lose a student's submission.
+    it('still returns a result when spaced repetition fails', async () => {
+      srsStub.processAttempt.mockRejectedValueOnce(new Error('srs exploded'));
+
+      queueGrading({
+        testQuestions: [
+          { question_id: 'q1', marks_override: null, questions: { correct_answer: { index: 0 }, marks: 4 } },
+        ],
+        studentAnswers: [{ question_id: 'q1', selected_answer: { index: 0 } }],
+      });
+
+      await expect(service.submitAttempt(ATTEMPT_ID, STUDENT)).resolves.toMatchObject({ score: 4 });
     });
   });
 });

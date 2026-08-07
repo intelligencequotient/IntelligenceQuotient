@@ -17,6 +17,31 @@ const CLOCK_GRACE_SECONDS = 30;
 /** Three strikes and the session is terminated. */
 const VIOLATION_LIMIT = 3;
 
+/**
+ * Violation types the schema's CHECK constraint accepts.
+ *
+ * The client's value used to be inserted as-is, so anything outside this set
+ * failed the constraint and surfaced as a 500 mid-exam instead of being either
+ * recorded or cleanly rejected.
+ */
+const VIOLATION_TYPES = [
+  'tab_hidden',
+  'window_blur',
+  'fullscreen_exit',
+  'devtools_suspected',
+] as const;
+
+/** Palette states `exam_responses.status` accepts. */
+const RESPONSE_STATUSES = [
+  'not_visited',
+  'not_answered',
+  'answered',
+  'marked',
+  'answered_marked',
+] as const;
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 @Injectable()
 export class AppService {
   private supabase: SupabaseClient;
@@ -46,6 +71,10 @@ export class AppService {
    * to read, answer or submit somebody else's exam.
    */
   private async loadOwnedSession(sessionId: string, studentId: string) {
+    // Reject a malformed id here rather than letting Postgres raise 22P02, which
+    // the filter would otherwise surface as an opaque 500.
+    if (!UUID_RE.test(sessionId)) throw new NotFoundException('Exam session not found');
+
     const { data: session, error } = await this.supabase
       .from('exam_sessions')
       .select('id, student_id, exam_id, started_at, ends_at, status, score')
@@ -66,6 +95,8 @@ export class AppService {
   // ── Session lifecycle ──────────────────────────────────────────────────────
 
   async startSession(examId: string, studentId: string) {
+    if (!UUID_RE.test(examId)) throw new NotFoundException('Test not found');
+
     const { data: testData, error: testError } = await this.supabase
       .from('tests')
       .select('id, title, duration_minutes, total_marks, status, negative_marking, negative_marks')
@@ -78,12 +109,14 @@ export class AppService {
     }
 
     // The student must actually be assigned this test, within its window.
+    // `maybeSingle`, not `single`: a student with no assignment is a forbidden
+    // request, not a database error.
     const { data: assignment } = await this.supabase
       .from('test_assignments')
       .select('id, scheduled_start, scheduled_end')
       .eq('test_id', examId)
       .eq('student_id', studentId)
-      .single();
+      .maybeSingle();
 
     if (!assignment) throw new ForbiddenException('You are not assigned to this test.');
 
@@ -134,7 +167,31 @@ export class AppService {
       .select()
       .single();
 
-    if (createError) throw new InternalServerErrorException('Failed to create session');
+    if (createError) {
+      // Two tabs, or a double-click on a slow connection, can both reach the
+      // insert. `exam_sessions_student_exam_unique` stops the duplicate; the
+      // loser of the race resumes the session the winner created.
+      if (this.isUniqueViolation(createError)) {
+        const { data: raced } = await this.supabase
+          .from('exam_sessions')
+          .select('*')
+          .eq('exam_id', examId)
+          .eq('student_id', studentId)
+          .maybeSingle();
+
+        if (raced) {
+          return {
+            sessionId: raced.id,
+            startedAt: raced.started_at,
+            endsAt: raced.ends_at,
+            resumed: true,
+            testDetails: testData,
+            savedResponses: await this.loadResponses(raced.id),
+          };
+        }
+      }
+      throw new InternalServerErrorException('Failed to create session');
+    }
 
     return {
       sessionId: newSession.id,
@@ -215,7 +272,21 @@ export class AppService {
     }
 
     const { question_id, selected_answer, status, time_spent_seconds } = payload || {};
-    if (!question_id) throw new BadRequestException('question_id is required');
+
+    if (typeof question_id !== 'string' || !question_id.trim()) {
+      throw new BadRequestException('question_id is required');
+    }
+    if (question_id.length > 100) {
+      throw new BadRequestException('question_id is not valid');
+    }
+
+    // The column carries a CHECK constraint; an unrecognised value would fail
+    // the insert and surface as a 500 rather than being corrected here.
+    const safeStatus = (RESPONSE_STATUSES as readonly string[]).includes(status)
+      ? status
+      : selected_answer
+        ? 'answered'
+        : 'not_answered';
 
     const { error } = await this.supabase
       .from('exam_responses')
@@ -223,9 +294,11 @@ export class AppService {
         {
           session_id: sessionId,
           question_id,
-          selected_answer,
-          status: status || 'answered',
-          time_spent_seconds: Math.max(0, Number(time_spent_seconds) || 0),
+          selected_answer: selected_answer ?? null,
+          status: safeStatus,
+          // Clamped: the client reports its own timer, and a whole session is
+          // bounded by the paper's duration anyway.
+          time_spent_seconds: Math.min(86_400, Math.max(0, Number(time_spent_seconds) || 0)),
           last_updated_at: new Date().toISOString(),
         },
         { onConflict: 'session_id,question_id' },
@@ -238,10 +311,30 @@ export class AppService {
   async logViolation(sessionId: string, studentId: string, payload: any) {
     const session = await this.loadOwnedSession(sessionId, studentId);
 
+    // A strike against a finished session is noise, not a violation.
+    if (session.status !== 'in_progress') {
+      return { success: true, terminated: true, strikes: VIOLATION_LIMIT };
+    }
+
+    // `exam_violations.type` is constrained in the schema, so an unrecognised
+    // value from the client used to fail the insert and 500 the request.
+    const type = (VIOLATION_TYPES as readonly string[]).includes(payload?.type)
+      ? payload.type
+      : null;
+    if (!type) {
+      throw new BadRequestException(
+        `type must be one of: ${VIOLATION_TYPES.join(', ')}.`,
+      );
+    }
+
+    const durationMs = Number(payload?.duration_ms);
+
     const { error } = await this.supabase.from('exam_violations').insert({
       session_id: sessionId,
-      type: payload?.type,
-      duration_ms: payload?.duration_ms,
+      type,
+      duration_ms: Number.isFinite(durationMs)
+        ? Math.min(86_400_000, Math.max(0, Math.round(durationMs)))
+        : null,
     });
 
     if (error) throw new InternalServerErrorException('Failed to log violation');
@@ -253,14 +346,7 @@ export class AppService {
 
     if (count !== null && count >= VIOLATION_LIMIT) {
       // Terminate, but still grade what was answered — the attempt happened.
-      if (session.status === 'in_progress') {
-        await this.gradeSession(sessionId, session.exam_id);
-      }
-      await this.supabase
-        .from('exam_sessions')
-        .update({ status: 'violation_terminated', submitted_at: new Date().toISOString() })
-        .eq('id', sessionId);
-
+      await this.finaliseSession(sessionId, session.exam_id, 'violation_terminated');
       return { success: true, terminated: true, strikes: count };
     }
 
@@ -275,23 +361,49 @@ export class AppService {
       return { success: true, alreadySubmitted: true, score: session.score };
     }
 
-    const result = await this.gradeSession(sessionId, session.exam_id);
-
     // A submit arriving after the deadline is recorded as an auto-submission.
     const late = this.isExpired(session.ends_at);
+    const status = autoSubmitted || late ? 'auto_submitted' : 'submitted';
+
+    const result = await this.finaliseSession(sessionId, session.exam_id, status);
+    return { success: true, autoSubmitted: autoSubmitted || late, ...result };
+  }
+
+  /**
+   * Grades a session and closes it in one conditional write.
+   *
+   * The `status = in_progress` predicate is the serialisation point: a manual
+   * submit landing at the same moment as the heartbeat's auto-submit, or as a
+   * third-strike termination, previously had both paths write a status and a
+   * score with nothing deciding which won.
+   */
+  private async finaliseSession(
+    sessionId: string,
+    examId: string,
+    status: 'submitted' | 'auto_submitted' | 'violation_terminated',
+  ) {
+    const result = await this.gradeSession(sessionId, examId);
 
     const { error } = await this.supabase
       .from('exam_sessions')
       .update({
-        status: autoSubmitted || late ? 'auto_submitted' : 'submitted',
+        status,
         submitted_at: new Date().toISOString(),
         score: result.score,
       })
-      .eq('id', sessionId);
+      .eq('id', sessionId)
+      .eq('status', 'in_progress');
 
     if (error) throw new InternalServerErrorException('Failed to submit exam');
+    return result;
+  }
 
-    return { success: true, autoSubmitted: autoSubmitted || late, ...result };
+  /** True for a unique-constraint violation — two requests racing the same insert. */
+  private isUniqueViolation(error: any): boolean {
+    return (
+      String(error?.code || '') === '23505' ||
+      /duplicate key value/i.test(String(error?.message || ''))
+    );
   }
 
   /**

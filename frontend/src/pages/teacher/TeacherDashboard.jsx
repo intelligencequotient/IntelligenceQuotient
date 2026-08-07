@@ -4,7 +4,7 @@ import {
   Users, Layers, Award, MessageSquare, FileText, Upload, Database, TrendingUp,
   ClipboardCheck, AlertTriangle,
 } from 'lucide-react';
-import { apiClient, getStoredUser } from '../../api/client';
+import { apiClient, getStoredUser, toList } from '../../api/client';
 import './TeacherDashboard.css';
 
 /**
@@ -36,12 +36,18 @@ const TeacherDashboard = () => {
       if (cancelled) return;
 
       const val = (r, fallback) => (r.status === 'fulfilled' ? r.value : fallback);
-      const testList = val(tests, []) || [];
-      const doubtList = val(doubts, []) || [];
+      // List endpoints answer `{ data, total, ... }`; `total` is the count across
+      // every page, which is what a dashboard tile should show.
+      const rows = (r) => (r.status === 'fulfilled' ? toList(r.value) : []);
+      const count = (r) =>
+        r.status === 'fulfilled' ? (r.value?.total ?? toList(r.value).length) : 0;
+
+      const testList = rows(tests);
+      const doubtList = rows(doubts);
 
       setStats({
-        students: (val(students, []) || []).length,
-        batches: (val(batches, []) || []).length,
+        students: count(students),
+        batches: rows(batches).length,
         published: testList.filter((t) => t.status === 'published').length,
         drafts: testList.filter((t) => t.status !== 'published').length,
         pendingDoubts: doubtList.filter((d) => d.status !== 'resolved').length,

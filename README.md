@@ -13,10 +13,21 @@ A full-stack application designed to streamline the assessment process for teach
 ## 🚀 Quick Start (How to Run)
 
 ### 0. One-time database setup
-Run `backend/migrations/001_security_indexes_and_features.sql` in the Supabase
-SQL Editor. It adds Row Level Security, indexes, the negative-marking and
-QA-review columns, and creates the spaced-repetition / predictions / lectures
-tables. It is idempotent — safe to re-run.
+Run every file in `backend/migrations/` in order, in the Supabase SQL Editor.
+All are idempotent — safe to re-run.
+
+| Migration | What it does |
+|---|---|
+| `001_security_indexes_and_features.sql` | RLS on every user-data table, base indexes, negative-marking and QA-review columns, spaced-repetition / predictions / lectures tables |
+| `002` – `004` | Test format columns, `assigned_to`, the `test_teachers` junction table |
+| `005_exam_session_sync.sql` | Answer palette state, `attempt_violations`, one assignment row per (test, student) |
+| `006_scale_indexes.sql` | Indexes for the queries that only hurt at cohort scale — rank/percentile counts, per-question breakdowns, assignment lookups |
+
+If you use the proctored `exam/` service, also run `exam/backend/schema.sql`
+followed by `exam/backend/migrations/001_exam_hardening.sql`. **The hardening
+migration is not optional**: `schema.sql` grants `FOR ALL USING (true)` on the
+exam tables, which is readable and writable by anyone holding the publishable
+anon key — every student, from the browser console.
 
 Then copy `.env.example` to `.env` (repo root) and `backend/.env`, and fill in
 your Supabase and Groq keys.
@@ -49,14 +60,57 @@ cd frontend && npx vitest run
 
 ---
 
+## 📈 Running at cohort scale (~1000 students)
+
+**Set `REDIS_URL` before running more than one API instance.** Three things
+depend on it and degrade quietly without it:
+
+| Without Redis | What breaks |
+|---|---|
+| Throttler counters are per-process | The configured limit is silently multiplied by the replica count |
+| Socket.IO rooms are per-process | A doubt reply sent on replica A never reaches a student connected to replica B |
+| The attempt sweeper has no lock | Every replica independently scans and grades the same abandoned attempts |
+
+With it set, `docker compose up --scale backend=3` is safe.
+
+Other things worth knowing when the platform is carrying a real cohort:
+
+- **Rate limits are per user, not per IP.** An exam hall behind one NAT address
+  used to share a single bucket; `THROTTLE_LIMIT` (default 300/min) now applies
+  to each student. Unauthenticated routes still bucket by IP, which is where
+  throttling is a security control rather than a fairness one.
+- **`trust proxy` is on** (`TRUST_PROXY`, default 1). Set it to the number of
+  proxy hops in front of the API so the client IP is read correctly.
+- **Collection endpoints are paginated.** `/tests`, `/users/students`,
+  `/users/admin/all`, `/lectures`, `/doubts` and `/doubts/my` answer
+  `{ data, total, page, limit, totalPages }`. The frontend's `toList()` helper
+  accepts either that or a bare array.
+- **Reads that can exceed 1000 rows are paged internally.** Supabase caps a
+  response at `db-max-rows` without signalling truncation, so leaderboards,
+  analytics and result pages go through `fetchAll` / `fetchAllIn`
+  (`backend/src/common/db/query.util.ts`) rather than a single select.
+- **Swagger is off in production.** Set `ENABLE_SWAGGER=true` to expose it
+  deliberately. Health probes use `/api/health`.
+
+---
+
 ## ✅ Completed Features
 
 **Security & correctness**
 - Cryptographic JWT verification (JWKS + rotation, HS256 fallback), role always read from the DB
-- Row Level Security on every user-data table, plus performance indexes (`migrations/001`)
+- Row Level Security on every user-data table, plus performance indexes (`migrations/001`, `006`)
 - Server-enforced exam windows: scheduled start/end, deadline on every write, background sweeper that grades abandoned attempts
+- **Fetching a question paper requires an assignment and an open window** — the same check as starting the attempt, so a paper cannot be read ahead of time by id
 - Negative marking applied at grading time; answer-key comparison handles single, multi-select and numeric answers
-- CORS allow-list in production, throttling actually enforced, session revoked on logout
+- Grading claims the attempt with a conditional update, so concurrent submits cannot double-grade or double-count
+- Every write endpoint has a DTO; request bodies are never spread into a DB write, so server-owned columns (`created_by`, `status`, `review_status`, `total_marks`) are not client-writable
+- Subject-scoped teachers are scoped on writes as well as reads — editing, deleting, approving and bulk operations all enforce it
+- Batches, lectures and tests check ownership on every path, and a missing row is a 404 rather than an implicit pass
+- The PDF pipeline spawns Python with an argv array, never a shell string; `examType` is matched against a fixed list
+- Uploads are size- and type-limited, and PDFs are checked by magic bytes rather than the declared MIME type
+- Changing your own password requires the current one, verified on an isolated auth client
+- Unhandled errors return a correlation id, not the underlying Postgres message
+- CORS allow-list in production for HTTP *and* WebSockets, throttling actually enforced per user, session revoked on logout
 
 **Features**
 - **Auth**: login, silent token refresh, logout, forgot/reset password
@@ -87,8 +141,10 @@ cd frontend && npx vitest run
 
 **Infra**
 - Dockerfiles + `docker-compose.yml`, GitHub Actions CI (typecheck, lint, tests, image build)
-- Redis-backed cache with in-memory fallback; leaderboard cached rather than recomputed per request
-- 48 tests (22 main backend, 7 exam service, 19 frontend)
+- Redis-backed cache with in-memory fallback; leaderboard cached rather than recomputed per request, with single-flight so an expiring key does not stampede
+- Redis-backed throttler storage and Socket.IO adapter, plus a distributed lock on the sweeper — the API scales horizontally
+- Security headers on the API and a real CSP on the static frontend; `/api/health` for probes
+- 155 tests (129 main backend, 7 exam service, 19 frontend)
 
 ---
 
@@ -97,7 +153,9 @@ cd frontend && npx vitest run
 - **BullMQ is installed but unused** — PDF extraction still runs inside the HTTP request. Live websocket progress covers the UX, but a very large paper can still tie up a worker.
 - **Self-registration is deliberately absent** — accounts are provisioned by an admin. Adding public signup to an exam platform would be a security regression.
 - **The `exam/` sub-app is a second front end** for proctored mode. The in-app Assessment Arena is the default path; launch the proctored shell with `#token=<access_token>` in the URL fragment (see `exam/frontend/src/api/client.js`).
-- **Load testing** (k6 / Artillery) has not been run — it needs a deployed target.
+- **Load testing** (k6 / Artillery) has not been run — it needs a deployed target. The scale work so far is structural (paging, chunking, batched writes, shared state in Redis); the numbers still need measuring against real infrastructure.
+- **`react-router` carries an open advisory** (GHSA-qwww-vcr4-c8h2, CSRF bypass in RSC mode). There is no patched 7.x — the only forward fix is React Router 8, and `npm audit fix --force` proposes a *downgrade* to 7.11.0 instead. This app uses plain declarative `BrowserRouter` routing with no RSC/framework mode, so the vulnerable code path is not reachable; the v8 migration is worth scheduling on its own rather than folding into a security pass.
+- **Tokens live in `localStorage`**, which means any XSS is a session compromise. Moving to httpOnly cookies needs a CSRF strategy and touches every request path, so it is a deliberate follow-up rather than an oversight.
 - Notification preferences were removed from Teacher Settings rather than left as non-functional toggles; there is no notification system behind them yet.
 
 ---

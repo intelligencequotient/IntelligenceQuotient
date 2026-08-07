@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { Book, FlaskConical, Calculator, BookOpen, Video, CheckCircle, ExternalLink } from 'lucide-react';
-import { apiClient } from '../../api/client';
+import { apiClient, toList } from '../../api/client';
 import './SubjectLanding.css';
 
 /**
@@ -51,8 +51,8 @@ const SubjectLanding = () => {
 
       if (cancelled) return;
 
-      if (syl.status === 'fulfilled') setSyllabus(syl.value || []);
-      if (lec.status === 'fulfilled') setLectures(lec.value || []);
+      if (syl.status === 'fulfilled') setSyllabus(toList(syl.value));
+      if (lec.status === 'fulfilled') setLectures(toList(lec.value));
       if (analytics.status === 'fulfilled') {
         setTopicStats(
           (analytics.value?.topicBreakdown || []).filter((t) => t.subject === subject.name),

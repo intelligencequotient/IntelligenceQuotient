@@ -65,7 +65,7 @@ const StudentCRM = () => {
       const params = new URLSearchParams();
       if (search) params.set('search', search);
       if (batchId) params.set('batchId', batchId);
-      setStudents(await apiClient.get(`/users/students?${params}`) || []);
+      setStudents(await apiClient.getList(`/users/students?${params}`));
     } catch (e) {
       setError(e.message || 'Could not load students.');
       setStudents([]);

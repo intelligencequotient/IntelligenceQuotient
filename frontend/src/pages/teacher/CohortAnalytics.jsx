@@ -3,7 +3,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
 } from 'recharts';
 import { Users, TrendingUp, AlertTriangle, ClipboardList } from 'lucide-react';
-import { apiClient } from '../../api/client';
+import { apiClient, toList } from '../../api/client';
 import './CohortAnalytics.css';
 
 /**
@@ -32,9 +32,9 @@ const CohortAnalytics = () => {
         apiClient.get('/batches'),
         apiClient.get('/tests?status=published'),
       ]);
-      if (b.status === 'fulfilled') setBatches(b.value || []);
+      if (b.status === 'fulfilled') setBatches(toList(b.value));
       if (t.status === 'fulfilled') {
-        const list = t.value || [];
+        const list = toList(t.value);
         setTests(list);
         if (list.length) setSelectedTest(list[0].id);
       }

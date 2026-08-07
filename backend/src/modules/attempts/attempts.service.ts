@@ -8,6 +8,7 @@ import {
 import { supabase } from '../../config/supabase.config';
 import { SpacedRepetitionService } from '../analytics/spaced-repetition.service';
 import { CacheService } from '../../common/cache/cache.service';
+import { chunk, fetchAll } from '../../common/db/query.util';
 
 /** Clock skew allowance so a student whose machine is a few seconds fast is not punished. */
 const CLOCK_GRACE_SECONDS = 30;
@@ -23,6 +24,12 @@ const ANSWER_STATUSES = [
   'marked',
   'answered_marked',
 ] as const;
+
+/** Cohort averages for a finished test barely move; recomputing per result view does not scale. */
+const COHORT_STATS_TTL_SECONDS = 60;
+
+/** One sweep pass never grades more than this, so a backlog cannot stall the loop. */
+const SWEEP_BATCH_LIMIT = 200;
 
 interface AttemptWindow {
   attemptId: string;
@@ -66,6 +73,12 @@ export class AttemptsService {
       return true;
     }
     return /does not exist|schema cache/i.test(String(error.message || ''));
+  }
+
+  /** True for a unique-constraint violation — two requests racing the same insert. */
+  private isUniqueViolation(error: any): boolean {
+    if (!error) return false;
+    return String(error.code || '') === '23505' || /duplicate key value/i.test(String(error.message || ''));
   }
 
   private warnMigrationMissing(what: string) {
@@ -244,26 +257,7 @@ export class AttemptsService {
 
     // If in progress, resume it — and hand back everything needed to rehydrate the UI.
     if (existing?.status === 'in_progress') {
-      const startedAt = new Date(existing.started_at || Date.now());
-      const expiresAt = new Date(startedAt.getTime() + (test.duration_minutes || 60) * 60 * 1000);
-
-      // The deadline may have passed while the student was away — finalise instead of resuming.
-      if (Date.now() > expiresAt.getTime() + CLOCK_GRACE_SECONDS * 1000) {
-        await this.submitAttempt(existing.id, studentId, true);
-        throw new BadRequestException(
-          'Your time for this test had already expired. The attempt was submitted automatically.',
-        );
-      }
-
-      return {
-        attemptId: existing.id,
-        testId,
-        resumed: true,
-        startedAt: startedAt.toISOString(),
-        expiresAt: expiresAt.toISOString(),
-        timeLeftSeconds: Math.max(0, Math.floor((expiresAt.getTime() - Date.now()) / 1000)),
-        savedAnswers: await this.getSavedAnswers(existing.id),
-      };
+      return this.resumeAttempt(existing, testId, test.duration_minutes || 60, studentId);
     }
 
     // Create new attempt
@@ -281,7 +275,25 @@ export class AttemptsService {
       .select()
       .single();
 
-    if (error) throw new Error(error.message);
+    if (error) {
+      // Two tabs (or a double-click on a slow connection) can reach the insert
+      // together. `attempts_student_test_unique` stops the duplicate; treat the
+      // loser of the race as a resume rather than a 500.
+      if (this.isUniqueViolation(error)) {
+        const { data: raced } = await supabase
+          .from('attempts')
+          .select('id, status, started_at')
+          .eq('test_id', testId)
+          .eq('student_id', studentId)
+          .maybeSingle();
+
+        if (raced?.status === 'in_progress') {
+          return this.resumeAttempt(raced, testId, test.duration_minutes || 60, studentId);
+        }
+        throw new BadRequestException('You have already submitted this test');
+      }
+      throw new Error(error.message);
+    }
 
     return {
       attemptId: attempt.id,
@@ -294,8 +306,37 @@ export class AttemptsService {
     };
   }
 
+  /** Rehydrates an in-progress attempt, or finalises it if the clock already ran out. */
+  private async resumeAttempt(
+    existing: { id: string; started_at: string },
+    testId: string,
+    durationMinutes: number,
+    studentId: string,
+  ) {
+    const startedAt = new Date(existing.started_at || Date.now());
+    const expiresAt = new Date(startedAt.getTime() + durationMinutes * 60 * 1000);
+
+    // The deadline may have passed while the student was away — finalise instead of resuming.
+    if (Date.now() > expiresAt.getTime() + CLOCK_GRACE_SECONDS * 1000) {
+      await this.submitAttempt(existing.id, studentId, true).catch(() => undefined);
+      throw new BadRequestException(
+        'Your time for this test had already expired. The attempt was submitted automatically.',
+      );
+    }
+
+    return {
+      attemptId: existing.id,
+      testId,
+      resumed: true,
+      startedAt: startedAt.toISOString(),
+      expiresAt: expiresAt.toISOString(),
+      timeLeftSeconds: Math.max(0, Math.floor((expiresAt.getTime() - Date.now()) / 1000)),
+      savedAnswers: await this.getSavedAnswers(existing.id),
+    };
+  }
+
   /** Answers already saved for an attempt, so a resumed exam can restore its state. */
-  async getSavedAnswers(attemptId: string) {
+  async getSavedAnswers(attemptId: string): Promise<any[]> {
     const columns = 'question_id, selected_answer, flagged_for_doubt, time_spent_seconds';
 
     if (this.hasAnswerStatus !== false) {
@@ -328,7 +369,7 @@ export class AttemptsService {
     studentId: string,
     body: {
       question_id: string;
-      selected_answer: any;
+      selected_answer?: any;
       status?: string;
       time_spent_seconds: number;
     },
@@ -504,27 +545,27 @@ export class AttemptsService {
 
     const scheme = await this.getMarkingScheme(attempt.test_id);
 
-    // Questions in the test WITH their correct answers
-    const { data: testQuestions } = await supabase
-      .from('test_questions')
-      .select('question_id, marks_override, questions(correct_answer, marks)')
-      .eq('test_id', attempt.test_id);
+    // Questions in the test WITH their correct answers. Paged: a full JEE paper
+    // is 90 rows today, but the read must not silently truncate if that changes.
+    const testQuestions = await fetchAll<any>(() =>
+      supabase
+        .from('test_questions')
+        .select('question_id, marks_override, questions(correct_answer, marks)')
+        .eq('test_id', attempt.test_id),
+    );
 
     // Student's answers for this attempt
-    const { data: studentAnswers } = await supabase
-      .from('answers')
-      .select('question_id, selected_answer')
-      .eq('attempt_id', attemptId);
-
-    const answerMap = new Map(
-      (studentAnswers || []).map((a) => [a.question_id, a.selected_answer]),
+    const studentAnswers = await fetchAll<any>(() =>
+      supabase.from('answers').select('question_id, selected_answer').eq('attempt_id', attemptId),
     );
+
+    const answerMap = new Map(studentAnswers.map((a) => [a.question_id, a.selected_answer]));
 
     let totalScore = 0;
     const answerUpdates: { attempt_id: string; question_id: string; is_correct: boolean | null }[] =
       [];
 
-    for (const tq of testQuestions || []) {
+    for (const tq of testQuestions) {
       const questionId = tq.question_id;
       const correctAnswer = (tq.questions as any)?.correct_answer;
       const marks = Number(tq.marks_override || (tq.questions as any)?.marks || 4);
@@ -546,12 +587,16 @@ export class AttemptsService {
       });
     }
 
-    for (const upd of answerUpdates) {
-      await supabase
+    // Persist correctness in bulk. This used to be one round-trip per question:
+    // a 90-question paper meant 90 sequential requests per submit, and a whole
+    // cohort finishing together turned that into ~90,000 serialised calls.
+    // Only answered questions have a row to update, so only those are written.
+    const attemptedUpdates = answerUpdates.filter((u) => u.is_correct !== null);
+    for (const batch of chunk(attemptedUpdates, 500)) {
+      const { error } = await supabase
         .from('answers')
-        .update({ is_correct: upd.is_correct })
-        .eq('attempt_id', upd.attempt_id)
-        .eq('question_id', upd.question_id);
+        .upsert(batch, { onConflict: 'attempt_id,question_id' });
+      if (error) throw new Error(error.message);
     }
 
     const submittedAt = new Date();
@@ -559,7 +604,11 @@ export class AttemptsService {
     const rawSeconds = Math.floor((submittedAt.getTime() - startedAt.getTime()) / 1000);
     const timeTakenSeconds = Math.min(rawSeconds, durationMinutes * 60);
 
-    const { error } = await supabase
+    // The `status = in_progress` predicate makes this the serialisation point:
+    // if two submits race (a manual click landing at the same moment as the
+    // sweeper, say), exactly one flips the row and only that one runs the
+    // post-submit side effects.
+    const { data: claimed, error } = await supabase
       .from('attempts')
       .update({
         status: 'submitted',
@@ -568,23 +617,34 @@ export class AttemptsService {
         auto_submitted: effectiveAutoSubmit,
       })
       .eq('id', attemptId)
-      .select()
-      .single();
+      .eq('status', 'in_progress')
+      .select('id')
+      .maybeSingle();
 
     if (error) throw new Error(error.message);
 
-    // Feed the graded answers into spaced repetition + predictions.
-    // Awaited so the result page reflects fresh state, but it can never fail a submit.
-    await this.srsService.processAttempt(attemptId, attempt.student_id);
+    if (claimed) {
+      // Feed the graded answers into spaced repetition + predictions.
+      // Awaited so the result page reflects fresh state, but it can never fail a submit.
+      await this.srsService
+        .processAttempt(attemptId, attempt.student_id)
+        .catch((e: any) =>
+          this.logger.error(`Spaced-repetition update failed for ${attemptId}: ${e?.message}`),
+        );
 
-    // A new score changes the rankings — drop the cached leaderboard.
-    await this.cache.invalidate('leaderboard:').catch(() => undefined);
+      // A new score changes the rankings — drop the cached aggregates.
+      await this.cache.invalidate('leaderboard:').catch(() => undefined);
+      await this.cache.invalidate('analytics:cohort:').catch(() => undefined);
+      await this.cache.invalidate(`attempt-cohort:${attempt.test_id}`).catch(() => undefined);
+    } else {
+      this.logger.log(`Attempt ${attemptId} was already finalised by a concurrent submit.`);
+    }
 
     const correct = answerUpdates.filter((a) => a.is_correct === true).length;
     const incorrect = answerUpdates.filter((a) => a.is_correct === false).length;
     const unattempted = answerUpdates.filter((a) => a.is_correct === null).length;
-    const total = testQuestions?.length || 1;
-    const maxScore = (testQuestions || []).reduce(
+    const total = testQuestions.length || 1;
+    const maxScore = testQuestions.reduce(
       (sum, tq) => sum + Number(tq.marks_override || (tq.questions as any)?.marks || 4),
       0,
     );
@@ -642,13 +702,21 @@ export class AttemptsService {
    * Finalises every in-progress attempt whose deadline has passed.
    * Called by the sweeper so a student who closes the tab still gets graded.
    * Returns the number of attempts submitted.
+   *
+   * Oldest first and capped per pass: during a cohort-wide exam there can be a
+   * thousand open attempts, and reading them all into memory on every tick
+   * (which is what an unbounded select did) is both slow and, past PostgREST's
+   * row cap, incomplete.
    */
   async autoSubmitExpiredAttempts(): Promise<number> {
-    const { data: open } = await supabase
+    const { data: open, error } = await supabase
       .from('attempts')
       .select('id, test_id, started_at, student_id, tests(duration_minutes)')
-      .eq('status', 'in_progress');
+      .eq('status', 'in_progress')
+      .order('started_at', { ascending: true })
+      .limit(SWEEP_BATCH_LIMIT);
 
+    if (error) throw new Error(error.message);
     if (!open?.length) return 0;
 
     let submitted = 0;
@@ -687,7 +755,8 @@ export class AttemptsService {
       .from('attempts')
       .select('id, status, total_score, started_at, submitted_at, tests(id, title, total_marks)')
       .eq('student_id', studentId)
-      .order('started_at', { ascending: false });
+      .order('started_at', { ascending: false })
+      .limit(200);
 
     if (error) throw new Error(error.message);
     return data;
@@ -724,31 +793,69 @@ export class AttemptsService {
 
   /**
    * Where this attempt sits among everyone who sat the same test.
-   * Replaces the hardcoded rank/percentile the result page used to display.
+   *
+   * Rank and percentile come from indexed COUNT queries rather than pulling
+   * every peer score into the API process — with a thousand submissions the old
+   * read was both heavy and truncated by PostgREST's row cap, so ranks drifted.
+   * The class average and top score are cached briefly, since they are identical
+   * for every student opening their result.
    */
   private async getCohortPosition(attempt: any) {
+    const testId = (attempt.tests as any)?.id;
+    if (!testId) return null;
+
     const score = Number(attempt.total_score) || 0;
 
-    const { data: peers } = await supabase
-      .from('attempts')
-      .select('total_score')
-      .eq('test_id', (attempt.tests as any)?.id)
-      .eq('status', 'submitted');
+    const countWhere = async (apply: (q: any) => any): Promise<number> => {
+      const { count } = await apply(
+        supabase
+          .from('attempts')
+          .select('*', { count: 'exact', head: true })
+          .eq('test_id', testId)
+          .eq('status', 'submitted'),
+      );
+      return count ?? 0;
+    };
 
-    const scores = (peers || []).map((p: any) => Number(p.total_score) || 0);
-    if (!scores.length) return null;
+    const [totalStudents, above, below] = await Promise.all([
+      countWhere((q) => q),
+      countWhere((q) => q.gt('total_score', score)),
+      countWhere((q) => q.lt('total_score', score)),
+    ]);
 
-    // Standard competition ranking: everyone strictly above you, plus one.
-    const above = scores.filter((s) => s > score).length;
-    const below = scores.filter((s) => s < score).length;
+    if (!totalStudents) return null;
+
+    const stats = await this.getTestScoreStats(testId);
 
     return {
+      // Standard competition ranking: everyone strictly above you, plus one.
       rank: above + 1,
-      totalStudents: scores.length,
+      totalStudents,
       // Percentage of the cohort scoring at or below this attempt.
-      percentile: Math.round((below / scores.length) * 100),
-      average: Number((scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(2)),
-      highest: Math.max(...scores),
+      percentile: Math.round((below / totalStudents) * 100),
+      average: stats.average,
+      highest: stats.highest,
     };
+  }
+
+  /** Cached mean/max for a test — recomputed at most once a minute per test. */
+  private async getTestScoreStats(testId: string): Promise<{ average: number; highest: number }> {
+    return this.cache.wrap(`attempt-cohort:${testId}`, COHORT_STATS_TTL_SECONDS, async () => {
+      const rows = await fetchAll<{ total_score: number }>(() =>
+        supabase
+          .from('attempts')
+          .select('total_score')
+          .eq('test_id', testId)
+          .eq('status', 'submitted'),
+      );
+
+      if (!rows.length) return { average: 0, highest: 0 };
+
+      const scores = rows.map((r) => Number(r.total_score) || 0);
+      return {
+        average: Number((scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(2)),
+        highest: Math.max(...scores),
+      };
+    });
   }
 }

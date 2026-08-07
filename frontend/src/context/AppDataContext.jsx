@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useMemo } from 'react';
-import { apiClient } from '../api/client';
+import { apiClient, toList } from '../api/client';
 
 const AppDataContext = createContext();
 
@@ -32,6 +32,10 @@ export const AppDataProvider = ({ children }) => {
         const user = JSON.parse(userStr);
         setLoading(true);
 
+        // List endpoints answer a paginated envelope; `toList` accepts either
+        // that or a bare array, so a shape change cannot silently blank a page.
+        const rows = (result) => (result.status === 'fulfilled' ? toList(result.value) : []);
+
         // Fetch based on user role
         if (user.role === 'teacher' || user.role === 'admin') {
           // Use Promise.allSettled to prevent one failing endpoint from crashing the entire app data fetch
@@ -43,22 +47,24 @@ export const AppDataProvider = ({ children }) => {
             apiClient.get('/doubts'),
             apiClient.get('/users/teachers')
           ]);
-          
-          setQuestions(results[0].status === 'fulfilled' ? (results[0].value.data || []) : []);
-          setTests(results[1].status === 'fulfilled' ? (results[1].value || []) : []);
-          setBatches(results[2].status === 'fulfilled' ? (results[2].value || []) : []);
-          setStudents(results[3].status === 'fulfilled' ? (results[3].value || []) : []);
-          setDoubts(results[4].status === 'fulfilled' ? (results[4].value || []) : []);
-          setTeachers(results[5].status === 'fulfilled' ? (results[5].value || []) : []);
+
+          setQuestions(rows(results[0]));
+          setTests(rows(results[1]));
+          setBatches(rows(results[2]));
+          setStudents(rows(results[3]));
+          setDoubts(rows(results[4]));
+          setTeachers(rows(results[5]));
         } else if (user.role === 'student') {
           const results = await Promise.allSettled([
             apiClient.get('/tests/available'),
             apiClient.get('/doubts/my'),
-            apiClient.get('/users/teachers')
+            // Students get the reduced directory — the full staff roster
+            // (including work emails) is teacher/admin only.
+            apiClient.get('/users/teachers/directory')
           ]);
-          setTests(results[0].status === 'fulfilled' ? (results[0].value || []) : []);
-          setDoubts(results[1].status === 'fulfilled' ? (results[1].value || []) : []);
-          setTeachers(results[2].status === 'fulfilled' ? (results[2].value || []) : []);
+          setTests(rows(results[0]));
+          setDoubts(rows(results[1]));
+          setTeachers(rows(results[2]));
         }
       } catch (error) {
         console.error('Failed to fetch initial app data:', error);
@@ -75,13 +81,11 @@ export const AppDataProvider = ({ children }) => {
       const userStr = localStorage.getItem('user');
       if (!userStr) return;
       const user = JSON.parse(userStr);
-      if (user.role === 'teacher' || user.role === 'admin') {
-        const tests = await apiClient.get('/tests');
-        setTests(tests || []);
-      } else {
-        const tests = await apiClient.get('/tests/available');
-        setTests(tests || []);
-      }
+      setTests(
+        await apiClient.getList(
+          user.role === 'teacher' || user.role === 'admin' ? '/tests' : '/tests/available',
+        ),
+      );
     } catch (e) {
       console.error('Failed to refresh tests:', e);
     }
@@ -92,13 +96,11 @@ export const AppDataProvider = ({ children }) => {
       const userStr = localStorage.getItem('user');
       if (!userStr) return;
       const user = JSON.parse(userStr);
-      if (user.role === 'teacher' || user.role === 'admin') {
-        const doubts = await apiClient.get('/doubts');
-        setDoubts(doubts || []);
-      } else {
-        const doubts = await apiClient.get('/doubts/my');
-        setDoubts(doubts || []);
-      }
+      setDoubts(
+        await apiClient.getList(
+          user.role === 'teacher' || user.role === 'admin' ? '/doubts' : '/doubts/my',
+        ),
+      );
     } catch (e) {
       console.error('Failed to refresh doubts:', e);
     }

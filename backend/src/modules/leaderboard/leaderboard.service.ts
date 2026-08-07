@@ -1,6 +1,7 @@
-import { Injectable } from '@nestjs/common';
+import { ForbiddenException, Injectable } from '@nestjs/common';
 import { supabase } from '../../config/supabase.config';
 import { CacheService } from '../../common/cache/cache.service';
+import { fetchAll } from '../../common/db/query.util';
 
 /**
  * Rankings are derived by aggregating every submitted attempt, which is far too
@@ -31,19 +32,24 @@ export class LeaderboardService {
    */
   private async buildRanking(): Promise<RankedStudent[]> {
     return this.cache.wrap(`${CACHE_PREFIX}global`, LEADERBOARD_TTL_SECONDS, async () => {
-      const { data, error } = await supabase
-        .from('attempts')
-        .select('student_id, total_score, users(id, full_name)')
-        .eq('status', 'submitted');
-
-      if (error) throw new Error(error.message);
+      // Paged. A single select returns at most PostgREST's `db-max-rows` (1000)
+      // and says nothing about having truncated — so once the platform passed
+      // 1000 submitted attempts the leaderboard was quietly built from a
+      // partial table and everyone's rank was wrong.
+      const data = await fetchAll<any>(() =>
+        supabase
+          .from('attempts')
+          .select('student_id, total_score, users(id, full_name)')
+          .eq('status', 'submitted')
+          .order('id', { ascending: true }),
+      );
 
       const totals = new Map<
         string,
         { id: string; name: string; totalScore: number; testCount: number; bestScore: number }
       >();
 
-      for (const attempt of data || []) {
+      for (const attempt of data) {
         const id = attempt.student_id;
         const score = Number(attempt.total_score) || 0;
         const name = (attempt.users as any)?.full_name || 'Unknown';
@@ -91,18 +97,39 @@ export class LeaderboardService {
     };
   }
 
+  /**
+   * Confirms the caller may see this batch's rankings.
+   *
+   * The route took only a batch id, so any student could enumerate other
+   * cohorts' names and scores by guessing ids. Staff see any batch; a student
+   * sees only a batch they are in.
+   */
+  async assertCanViewBatch(batchId: string, user: { id: string; role?: string }): Promise<void> {
+    if (user.role === 'teacher' || user.role === 'admin') return;
+
+    const { data: membership } = await supabase
+      .from('batch_students')
+      .select('batch_id')
+      .eq('batch_id', batchId)
+      .eq('student_id', user.id)
+      .maybeSingle();
+
+    if (!membership) {
+      throw new ForbiddenException('You are not a member of this batch.');
+    }
+  }
+
   /** Leaderboard scoped to one batch */
   async getBatch(batchId: string) {
     return this.cache.wrap(
       `${CACHE_PREFIX}batch:${batchId}`,
       LEADERBOARD_TTL_SECONDS,
       async () => {
-        const { data: batchStudents } = await supabase
-          .from('batch_students')
-          .select('student_id')
-          .eq('batch_id', batchId);
+        const batchStudents = await fetchAll<{ student_id: string }>(() =>
+          supabase.from('batch_students').select('student_id').eq('batch_id', batchId),
+        );
 
-        const studentIds = new Set((batchStudents || []).map((b: any) => b.student_id));
+        const studentIds = new Set(batchStudents.map((b) => b.student_id));
         if (!studentIds.size) return [];
 
         // Reuse the global aggregate rather than re-querying attempts.

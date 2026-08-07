@@ -1,80 +1,207 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+  ForbiddenException,
+} from '@nestjs/common';
 import { supabase } from '../../config/supabase.config';
+import {
+  fetchAll,
+  fetchAllIn,
+  ID_CHUNK_SIZE,
+  insertInBatches,
+  runInChunks,
+} from '../../common/db/query.util';
+import {
+  AssignTestDto,
+  CreateTestDto,
+  SaveFullTestDto,
+  UpdateTestDto,
+} from './dto/test.dto';
+
+/** Allowance for client clock skew, matching AttemptsService. */
+const CLOCK_GRACE_SECONDS = 30;
+
+export interface Requester {
+  id: string;
+  role?: string;
+  subject?: string;
+}
+
+/** Columns a client may set on a test. Everything else is server-derived. */
+const WRITABLE_COLUMNS = [
+  'title',
+  'description',
+  'subject',
+  't_type',
+  'duration_minutes',
+  'negative_marking',
+  'negative_marks',
+  'instructions',
+] as const;
 
 @Injectable()
 export class TestsService {
-  /** List all tests */
-  async findAll(teacherId: string, status?: string) {
+  // ── Authorisation ───────────────────────────────────────────────────────────
+
+  /**
+   * Confirms the caller may administer this test, and 404s when it does not exist.
+   *
+   * The previous guard was `if (test && test.created_by !== user.id) throw` —
+   * which silently allowed the operation when the lookup returned nothing, and
+   * was skipped entirely whenever `user` was undefined.
+   */
+  private async assertCanManage(testId: string, user: Requester): Promise<any> {
+    const { data: test } = await supabase
+      .from('tests')
+      .select('id, created_by, status')
+      .eq('id', testId)
+      .single();
+
+    if (!test) throw new NotFoundException('Test not found');
+    if (user.role === 'admin') return test;
+    if (test.created_by === user.id) return test;
+
+    // A teacher assigned to fill this paper may work on it too.
+    const { data: collaborator } = await supabase
+      .from('test_teachers')
+      .select('teacher_id')
+      .eq('test_id', testId)
+      .eq('teacher_id', user.id)
+      .maybeSingle();
+
+    if (collaborator) return test;
+    throw new ForbiddenException('You do not have access to this test.');
+  }
+
+  /**
+   * Confirms a student is assigned this test and that the exam window is open.
+   *
+   * `GET /api/tests/:id` and `GET /api/tests/:id/questions` used to take only an
+   * id, so any logged-in student could pull down the full question paper for any
+   * test — including one scheduled for next week, or one assigned to a different
+   * batch entirely. Returns the merged window for the caller.
+   */
+  private async assertStudentMaySit(
+    testId: string,
+    studentId: string,
+    { requireOpen = true } = {},
+  ): Promise<void> {
+    const { data: test } = await supabase
+      .from('tests')
+      .select('id, status')
+      .eq('id', testId)
+      .single();
+
+    if (!test) throw new NotFoundException('Test not found');
+    if (test.status !== 'published') {
+      throw new ForbiddenException('This test is not available.');
+    }
+
+    const { data: rows, error } = await supabase
+      .from('test_assignments')
+      .select('scheduled_start, scheduled_end')
+      .eq('test_id', testId)
+      .eq('student_id', studentId);
+
+    if (error) throw new Error(error.message);
+    if (!rows?.length) throw new ForbiddenException('You are not assigned to this test.');
+
+    if (!requireOpen) return;
+
+    // Widest window across every batch the student sits in.
+    const starts = rows.map((r) => (r.scheduled_start ? new Date(r.scheduled_start).getTime() : null));
+    const ends = rows.map((r) => (r.scheduled_end ? new Date(r.scheduled_end).getTime() : null));
+    const opensAt = starts.includes(null) ? null : Math.min(...(starts as number[]));
+    const closesAt = ends.includes(null) ? null : Math.max(...(ends as number[]));
+
+    const now = Date.now();
+    const grace = CLOCK_GRACE_SECONDS * 1000;
+
+    if (opensAt !== null && now < opensAt - grace) {
+      throw new ForbiddenException(
+        `This test opens at ${new Date(opensAt).toISOString()}.`,
+      );
+    }
+    if (closesAt !== null && now > closesAt + grace) {
+      throw new ForbiddenException('The window for this test has closed.');
+    }
+  }
+
+  /** Strips everything that is not a client-writable column. */
+  private pickWritable(body: Record<string, any>): Record<string, any> {
+    const out: Record<string, any> = {};
+    for (const key of WRITABLE_COLUMNS) {
+      if (body?.[key] !== undefined) out[key] = body[key];
+    }
+    // Negative marks only mean anything when the scheme is on.
+    if (out.negative_marking === false) out.negative_marks = 0;
+    return out;
+  }
+
+  // ── Teacher reads ───────────────────────────────────────────────────────────
+
+  /**
+   * List tests for the staff console.
+   *
+   * This used to select `test_questions(question_id, questions(*))` for *every*
+   * test, which meant one page load serialised the whole question bank — full
+   * question text, options and answer keys — for every test in the library. The
+   * list only needs each question's subject, to show the per-subject counts, so
+   * that is all it asks for now, and the response is paginated.
+   */
+  async findAll(user: Requester, filters: { status?: string; page?: number; limit?: number } = {}) {
+    const page = Math.max(Number(filters.page) || 1, 1);
+    const limit = Math.min(Math.max(Number(filters.limit) || 50, 1), 200);
+    const from = (page - 1) * limit;
+
     let query = supabase
       .from('tests')
-      .select(`
+      .select(
+        `
         id, title, description, subject, t_type, status, duration_minutes,
         total_marks, negative_marking, negative_marks, created_at, created_by,
         test_teachers(teacher_id, subject, users(id, full_name, email)),
-        test_questions(question_id, questions(*))
-      `)
-      .order('created_at', { ascending: false });
+        test_questions(question_id, questions(subject))
+      `,
+        { count: 'exact' },
+      )
+      .order('created_at', { ascending: false })
+      .range(from, from + limit - 1);
 
-    if (status) query = query.eq('status', status);
+    if (filters.status) query = query.eq('status', filters.status);
 
-    const { data, error } = await query;
+    const { data, error, count } = await query;
     if (error) throw new Error(error.message);
-    return data;
+
+    const total = count ?? 0;
+    return {
+      data: (data || []).map((t: any) => ({
+        ...t,
+        questionCount: t.test_questions?.length ?? 0,
+        // Kept for the older callers that read snake_case.
+        question_count: t.test_questions?.length ?? 0,
+      })),
+      total,
+      page,
+      limit,
+      totalPages: Math.max(1, Math.ceil(total / limit)),
+    };
   }
 
-
-  /** Create a new test (starts as 'draft') */
-  async create(body: any, teacherId: string) {
-    // Strip frontend-only field before inserting
-    const { teacher_ids, assigned_to, ...testBody } = body as any;
-
-    const { data, error } = await supabase
-      .from('tests')
-      .insert({ ...testBody, created_by: teacherId, status: 'draft' })
-      .select()
-      .single();
-    if (error) throw new Error(error.message);
-
-    // Optionally assign teachers right away
-    const ids: string[] = Array.isArray(teacher_ids) ? teacher_ids : [];
-    if (ids.length > 0) {
-      await supabase.from('test_teachers').insert(
-        ids.map(tid => ({ test_id: data.id, teacher_id: tid }))
-      );
+  /**
+   * Get test details + its questions.
+   *
+   * Staff see the paper; a student only sees it if they are assigned and the
+   * window is open, and never sees `correct_answer`.
+   */
+  async findOne(id: string, user: Requester) {
+    if (user.role === 'student') {
+      await this.assertStudentMaySit(id, user.id);
+    } else {
+      await this.assertCanManage(id, user);
     }
 
-    return data;
-  }
-
-  /** [Admin] Set the full list of teachers assigned to a test (replaces previous list) */
-  async assignTeachers(testId: string, teacherIds: string[]) {
-    // Delete existing assignments for this test
-    const { error: delError } = await supabase
-      .from('test_teachers')
-      .delete()
-      .eq('test_id', testId);
-    if (delError) throw new Error(delError.message);
-
-    // Insert the new list (empty array = unassign all)
-    if (teacherIds.length > 0) {
-      const { error: insError } = await supabase
-        .from('test_teachers')
-        .insert(teacherIds.map(tid => ({ test_id: testId, teacher_id: tid })));
-      if (insError) throw new Error(insError.message);
-    }
-
-    // Return updated test with teachers
-    const { data, error } = await supabase
-      .from('tests')
-      .select('id, title, test_teachers(teacher_id, users(id, full_name, email))')
-      .eq('id', testId)
-      .single();
-    if (error) throw new Error(error.message);
-    return data;
-  }
-
-  /** Get test details + its questions */
-  async findOne(id: string) {
     const { data, error } = await supabase
       .from('tests')
       .select(`
@@ -88,15 +215,67 @@ export class TestsService {
     return data;
   }
 
-  /** Update a draft test */
-  async update(id: string, body: any, user?: any) {
-    if (user) {
-      const { data: test } = await supabase.from('tests').select('created_by').eq('id', id).single();
-      if (test && test.created_by !== user.id) throw new BadRequestException('Only the initiator can update test metadata.');
-    }
+  // ── Teacher writes ──────────────────────────────────────────────────────────
+
+  /** Create a new test (starts as 'draft') */
+  async create(body: CreateTestDto, user: Requester) {
     const { data, error } = await supabase
       .from('tests')
-      .update({ ...body, updated_at: new Date().toISOString() })
+      .insert({
+        ...this.pickWritable(body),
+        created_by: user.id,
+        status: 'draft',
+        total_marks: 0,
+      })
+      .select()
+      .single();
+    if (error) throw new Error(error.message);
+
+    // Optionally assign teachers right away
+    const ids = Array.isArray(body.teacher_ids) ? body.teacher_ids : [];
+    if (ids.length > 0) {
+      await supabase
+        .from('test_teachers')
+        .insert(ids.map((tid) => ({ test_id: data.id, teacher_id: tid })));
+    }
+
+    return data;
+  }
+
+  /** [Admin] Set the full list of teachers assigned to a test (replaces previous list) */
+  async assignTeachers(testId: string, teacherIds: string[]) {
+    const { data: test } = await supabase.from('tests').select('id').eq('id', testId).single();
+    if (!test) throw new NotFoundException('Test not found');
+
+    const { error: delError } = await supabase
+      .from('test_teachers')
+      .delete()
+      .eq('test_id', testId);
+    if (delError) throw new Error(delError.message);
+
+    if (teacherIds.length > 0) {
+      const { error: insError } = await supabase
+        .from('test_teachers')
+        .insert(teacherIds.map((tid) => ({ test_id: testId, teacher_id: tid })));
+      if (insError) throw new Error(insError.message);
+    }
+
+    const { data, error } = await supabase
+      .from('tests')
+      .select('id, title, test_teachers(teacher_id, users(id, full_name, email))')
+      .eq('id', testId)
+      .single();
+    if (error) throw new Error(error.message);
+    return data;
+  }
+
+  /** Update test metadata */
+  async update(id: string, body: UpdateTestDto, user: Requester) {
+    await this.assertCanManage(id, user);
+
+    const { data, error } = await supabase
+      .from('tests')
+      .update({ ...this.pickWritable(body), updated_at: new Date().toISOString() })
       .eq('id', id)
       .select()
       .single();
@@ -104,36 +283,32 @@ export class TestsService {
     return data;
   }
 
-  /** Delete a draft test */
-  async remove(id: string, user?: any) {
-    if (user) {
-      const { data: test } = await supabase.from('tests').select('created_by').eq('id', id).single();
-      if (test && test.created_by !== user.id) throw new BadRequestException('Only the initiator can delete this test.');
+  /** Delete a test and everything hanging off it */
+  async remove(id: string, user: Requester) {
+    await this.assertCanManage(id, user);
+
+    // Manual cascade delete to satisfy foreign key constraints. Every id list is
+    // chunked — a popular test has one attempt per student, and a thousand UUIDs
+    // in a single `.in()` overflows the PostgREST request URL.
+    const attempts = await fetchAll<{ id: string }>(() =>
+      supabase.from('attempts').select('id').eq('test_id', id),
+    );
+
+    if (attempts.length) {
+      const attemptIds = attempts.map((a) => a.id);
+      await runInChunks(attemptIds, (ids) =>
+        supabase.from('answers').delete().in('attempt_id', ids),
+      );
+      await runInChunks(attemptIds, (ids) =>
+        supabase.from('attempt_violations').delete().in('attempt_id', ids),
+      ).catch(() => undefined); // table only exists once migration 005 has run
     }
 
-    // Manual cascade delete to satisfy foreign key constraints
-
-    // 1. Delete answers associated with attempts of this test
-    const { data: attempts } = await supabase.from('attempts').select('id').eq('test_id', id);
-    if (attempts && attempts.length > 0) {
-      const attemptIds = attempts.map((a: any) => a.id);
-      // Supabase in() can handle arrays. If too large, it might fail, but fine for typical deletes.
-      await supabase.from('answers').delete().in('attempt_id', attemptIds);
-    }
-
-    // 2. Delete attempts
     await supabase.from('attempts').delete().eq('test_id', id);
-
-    // 3. Delete assignments
     await supabase.from('test_assignments').delete().eq('test_id', id);
-
-    // 4. Delete questions association
     await supabase.from('test_questions').delete().eq('test_id', id);
-
-    // 5. Delete teachers association
     await supabase.from('test_teachers').delete().eq('test_id', id);
 
-    // Finally, delete the test itself
     const { error } = await supabase.from('tests').delete().eq('id', id);
     if (error) throw new Error(error.message);
 
@@ -141,69 +316,117 @@ export class TestsService {
   }
 
   /** Add questions to test (Step 2 of TestConstructor) */
-  async addQuestions(testId: string, questionIds: string[], user?: any) {
-    if (!questionIds) questionIds = []; // Allow empty array to clear questions
+  async addQuestions(testId: string, questionIds: string[], user: Requester) {
+    await this.assertCanManage(testId, user);
+    const ids = questionIds ?? []; // Allow empty array to clear questions
 
     const { data: existingTestQuestions } = await supabase
       .from('test_questions')
-      .select('question_id, questions(subject)')
+      .select('question_id')
       .eq('test_id', testId);
 
-    const existingIds = (existingTestQuestions || []).map(tq => tq.question_id);
+    const existingIds = (existingTestQuestions || []).map((tq) => tq.question_id);
 
-    if (user && user.role === 'teacher' && user.subject && user.subject !== 'All') {
-      const addedIds = questionIds.filter(id => !existingIds.includes(id));
-      const removedIds = existingIds.filter(id => !questionIds.includes(id));
+    // Only approved questions may enter a live paper — that is the whole point
+    // of the QA queue. Also enforces the teacher's subject scope.
+    const touched = [
+      ...ids.filter((id) => !existingIds.includes(id)),
+      ...existingIds.filter((id) => !ids.includes(id)),
+    ];
+    await this.assertQuestionsUsable(ids, touched, user);
 
-      if (addedIds.length > 0) {
-        const { data: qData, error: qError } = await supabase.from('questions').select('subject').in('id', addedIds);
-        if (qError) throw new BadRequestException('Error validating added questions');
-        if (qData.some(q => q.subject !== user.subject)) {
-          throw new BadRequestException(`Access denied: You can only add ${user.subject} questions.`);
-        }
-      }
-
-      if (removedIds.length > 0) {
-        const { data: qData, error: qError } = await supabase.from('questions').select('subject').in('id', removedIds);
-        if (qError) throw new BadRequestException('Error validating removed questions');
-        if (qData.some(q => q.subject !== user.subject)) {
-          throw new BadRequestException(`Access denied: You can only remove ${user.subject} questions.`);
-        }
-      }
-    }
-
-    const rows = questionIds.map((qId, idx) => ({
+    const rows = ids.map((qId, idx) => ({
       test_id: testId,
       question_id: qId,
       question_order: idx + 1,
     }));
 
-    // Delete old questions first, then re-insert
     await supabase.from('test_questions').delete().eq('test_id', testId);
-    const { error } = await supabase.from('test_questions').insert(rows);
-    if (error) throw new Error(error.message);
+    if (rows.length) {
+      const { error } = await supabase.from('test_questions').insert(rows);
+      if (error) throw new Error(error.message);
+    }
 
-    // Recalculate total_marks
-    const { data: questions } = await supabase
-      .from('test_questions')
-      .select('marks_override, questions(marks)')
-      .eq('test_id', testId);
-
-    const totalMarks = (questions || []).reduce((sum: number, tq: any) => {
-      return sum + (tq.marks_override || tq.questions?.marks || 4);
-    }, 0);
-
-    await supabase.from('tests').update({ total_marks: totalMarks }).eq('id', testId);
-
+    const totalMarks = await this.recalculateTotalMarks(testId);
     return { message: 'Questions updated', total_marks: totalMarks };
   }
 
-  /** Publish a test (makes it visible to students) */
-  async publish(id: string, user?: any) {
-    if (user) {
-      const { data: test } = await supabase.from('tests').select('created_by').eq('id', id).single();
-      if (test && test.created_by !== user.id) throw new BadRequestException('Only the initiator can publish this test.');
+  /**
+   * Validates that the questions going onto a paper are approved and, for a
+   * subject-scoped teacher, inside their subject.
+   */
+  private async assertQuestionsUsable(
+    questionIds: string[],
+    scopeCheckIds: string[],
+    user: Requester,
+  ): Promise<void> {
+    const scoped =
+      user.role === 'teacher' && user.subject && user.subject !== 'All' ? user.subject : null;
+
+    const idsToLoad = [...new Set([...questionIds, ...scopeCheckIds])];
+    if (!idsToLoad.length) return;
+
+    const rows = await fetchAllIn<{ id: string; subject: string; review_status: string; is_active: boolean }>(
+      idsToLoad,
+      (idChunk) =>
+        supabase.from('questions').select('id, subject, review_status, is_active').in('id', idChunk),
+    );
+
+    const byId = new Map(rows.map((r) => [r.id, r]));
+
+    for (const id of questionIds) {
+      const q = byId.get(id);
+      if (!q) throw new BadRequestException(`Question ${id} does not exist.`);
+      if (!q.is_active) throw new BadRequestException('A selected question has been deleted.');
+      if (q.review_status !== 'approved') {
+        throw new BadRequestException(
+          'Every question on a test must be approved in the review queue first.',
+        );
+      }
     }
+
+    if (scoped) {
+      for (const id of scopeCheckIds) {
+        const q = byId.get(id);
+        if (q && String(q.subject).toLowerCase() !== scoped.toLowerCase()) {
+          throw new ForbiddenException(`You can only add or remove ${scoped} questions.`);
+        }
+      }
+    }
+  }
+
+  /** Sums the paper's marks and stores them on the test row. */
+  private async recalculateTotalMarks(testId: string): Promise<number> {
+    const questions = await fetchAll<{ marks_override: number | null; questions: any }>(() =>
+      supabase
+        .from('test_questions')
+        .select('marks_override, questions(marks)')
+        .eq('test_id', testId),
+    );
+
+    const totalMarks = questions.reduce(
+      (sum, tq: any) => sum + Number(tq.marks_override || tq.questions?.marks || 4),
+      0,
+    );
+
+    await supabase.from('tests').update({ total_marks: totalMarks }).eq('id', testId);
+    return totalMarks;
+  }
+
+  /** Publish a test (makes it visible to students) */
+  async publish(id: string, user: Requester) {
+    await this.assertCanManage(id, user);
+
+    // An empty paper published by accident is worse than a failed request.
+    const { count } = await supabase
+      .from('test_questions')
+      .select('*', { count: 'exact', head: true })
+      .eq('test_id', id);
+
+    if (!count) {
+      throw new BadRequestException('Add at least one question before publishing this test.');
+    }
+
     const { data, error } = await supabase
       .from('tests')
       .update({ status: 'published', updated_at: new Date().toISOString() })
@@ -215,128 +438,147 @@ export class TestsService {
   }
 
   /** Assign test to batches with a schedule */
-  async assign(testId: string, body: {
-    batch_ids: string[];
-    scheduled_start: string;
-    scheduled_end: string;
-  }, user?: any) {
-    if (user) {
-      const { data: test } = await supabase.from('tests').select('created_by').eq('id', testId).single();
-      if (test && test.created_by !== user.id) throw new BadRequestException('Only the initiator can assign this test.');
+  async assign(testId: string, body: AssignTestDto, user: Requester) {
+    await this.assertCanManage(testId, user);
+    this.assertWindowSane(body.scheduled_start, body.scheduled_end);
+
+    const assignments = await this.buildAssignments(
+      testId,
+      body.batch_ids,
+      body.scheduled_start,
+      body.scheduled_end,
+    );
+
+    if (!assignments.length) {
+      throw new BadRequestException('No students found in the selected batches');
     }
-    // For each batch, get its students, then create one assignment per student
-    const assignments: any[] = [];
 
-    for (const batchId of body.batch_ids) {
-      const { data: batchStudents } = await supabase
-        .from('batch_students')
-        .select('student_id')
-        .eq('batch_id', batchId);
+    await this.replaceAssignments(testId, assignments);
+    return { message: `Test assigned to ${assignments.length} students` };
+  }
 
-      for (const bs of (batchStudents || [])) {
-        assignments.push({
+  /**
+   * One assignment row per student across all selected batches.
+   *
+   * `batch_students` is read per batch and paged: a 400-student batch used to
+   * come back truncated at PostgREST's 1000-row cap once several batches were
+   * selected at once.
+   */
+  private async buildAssignments(
+    testId: string,
+    batchIds: string[],
+    scheduledStart?: string,
+    scheduledEnd?: string,
+  ): Promise<any[]> {
+    const byStudent = new Map<string, any>();
+
+    for (const batchId of batchIds) {
+      const students = await fetchAll<{ student_id: string }>(() =>
+        supabase.from('batch_students').select('student_id').eq('batch_id', batchId),
+      );
+
+      for (const bs of students) {
+        // A student in two of the selected batches must still end up with exactly
+        // one row — `test_assignments` is unique on (test_id, student_id).
+        if (byStudent.has(bs.student_id)) continue;
+        byStudent.set(bs.student_id, {
           test_id: testId,
           batch_id: batchId,
           student_id: bs.student_id,
-          scheduled_start: body.scheduled_start,
-          scheduled_end: body.scheduled_end,
+          scheduled_start: scheduledStart ?? null,
+          scheduled_end: scheduledEnd ?? null,
         });
       }
     }
 
-    // A student in two of the selected batches must still end up with exactly
-    // one assignment row — `startAttempt` reads this per (test, student), and a
-    // duplicate used to surface as "You are not assigned to this test".
-    const deduped = this.dedupeAssignments(assignments);
-
-    if (!deduped.length) {
-      throw new BadRequestException('No students found in the selected batches');
-    }
-
-    // Manually handle upsert to avoid unique constraint requirements:
-    // Delete existing assignments for this test and these students, then insert.
-    const studentIds = deduped.map(d => d.student_id);
-    
-    // Split into smaller chunks if there are many students (PostgREST has URL length limits for .in())
-    // Though usually batch sizes are small enough.
-    if (studentIds.length > 0) {
-      await supabase
-        .from('test_assignments')
-        .delete()
-        .eq('test_id', testId)
-        .in('student_id', studentIds);
-    }
-
-    const { error } = await supabase
-      .from('test_assignments')
-      .insert(deduped);
-    if (error) throw new Error(error.message);
-
-    return { message: `Test assigned to ${deduped.length} students` };
-  }
-
-  /** Collapses assignment rows to one per student, keeping the first batch seen. */
-  private dedupeAssignments(rows: any[]): any[] {
-    const byStudent = new Map<string, any>();
-    for (const row of rows) {
-      if (!byStudent.has(row.student_id)) byStudent.set(row.student_id, row);
-    }
     return [...byStudent.values()];
   }
+
+  /** Clears the previous assignment set for these students, then writes the new one. */
+  private async replaceAssignments(testId: string, assignments: any[]): Promise<void> {
+    const studentIds = assignments.map((a) => a.student_id);
+
+    await runInChunks(
+      studentIds,
+      (ids) => supabase.from('test_assignments').delete().eq('test_id', testId).in('student_id', ids),
+      ID_CHUNK_SIZE,
+    );
+
+    await insertInBatches(assignments, (batch) =>
+      supabase.from('test_assignments').insert(batch),
+    );
+  }
+
+  private assertWindowSane(start?: string, end?: string) {
+    if (start && end && new Date(end).getTime() <= new Date(start).getTime()) {
+      throw new BadRequestException('The exam window must end after it starts.');
+    }
+  }
+
+  // ── Student reads ───────────────────────────────────────────────────────────
 
   /** Get tests available for a student (based on their assignment) */
   async getStudentTests(studentId: string) {
     // Step 1: Get test_assignment rows for this student
-    const { data: assignments, error: aErr } = await supabase
-      .from('test_assignments')
-      .select('id, scheduled_start, scheduled_end, test_id, batch_id')
-      .eq('student_id', studentId)
-      .order('scheduled_start', { ascending: true });
+    const assignments = await fetchAll<any>(() =>
+      supabase
+        .from('test_assignments')
+        .select('id, scheduled_start, scheduled_end, test_id, batch_id')
+        .eq('student_id', studentId)
+        .order('scheduled_start', { ascending: true }),
+    );
 
-    if (aErr) throw new Error(aErr.message);
-    if (!assignments || assignments.length === 0) return [];
+    if (!assignments.length) return [];
 
     // Step 2: Fetch the tests separately (avoids triggering batch_students RLS)
-    const testIds = [...new Set(assignments.map((a: any) => a.test_id))];
-    const { data: tests, error: tErr } = await supabase
-      .from('tests')
-      .select('id, title, description, t_type, duration_minutes, total_marks, status')
-      .in('id', testIds)
-      .eq('status', 'published');
-
-    if (tErr) throw new Error(tErr.message);
+    const testIds = [...new Set(assignments.map((a) => a.test_id))];
+    const tests = await fetchAllIn<any>(testIds, (idChunk) =>
+      supabase
+        .from('tests')
+        .select('id, title, description, t_type, duration_minutes, total_marks, status')
+        .in('id', idChunk)
+        .eq('status', 'published'),
+    );
 
     // Step 3: Merge
-    const testMap = new Map((tests || []).map((t: any) => [t.id, t]));
+    const testMap = new Map(tests.map((t) => [t.id, t]));
     return assignments
-      .filter((a: any) => testMap.has(a.test_id))
-      .map((a: any) => ({ ...a, tests: testMap.get(a.test_id) }));
+      .filter((a) => testMap.has(a.test_id))
+      .map((a) => ({ ...a, tests: testMap.get(a.test_id) }));
   }
 
   /**
    * Get test questions for a student — NEVER returns correct_answer!
    * correct_answer is only used by backend on submission.
+   *
+   * Assignment and the scheduled window are both enforced here: fetching the
+   * paper is exactly as sensitive as starting the attempt.
    */
-  async getTestQuestionsForStudent(testId: string) {
-    const { data, error } = await supabase
-      .from('test_questions')
-      .select(`
-        question_order, marks_override,
-        questions(id, subject, topic, question_text, options, difficulty, q_type, image_url, marks)
-      `)
-      .eq('test_id', testId)
-      .order('question_order', { ascending: true });
+  async getTestQuestionsForStudent(testId: string, studentId: string) {
+    await this.assertStudentMaySit(testId, studentId);
 
-    if (error) throw new Error(error.message);
-    return data;
+    return fetchAll<any>(() =>
+      supabase
+        .from('test_questions')
+        .select(`
+          question_order, marks_override,
+          questions(id, subject, topic, question_text, options, difficulty, q_type, image_url, marks)
+        `)
+        .eq('test_id', testId)
+        .order('question_order', { ascending: true }),
+    );
   }
+
+  // ── Results ─────────────────────────────────────────────────────────────────
 
   /**
    * Full result set for a test (teacher view): the ranked scoreboard, cohort
    * summary stats, and a per-question breakdown showing which items the class
    * struggled with.
    */
-  async getResults(testId: string) {
+  async getResults(testId: string, user: Requester) {
+    await this.assertCanManage(testId, user);
+
     const { data: test } = await supabase
       .from('tests')
       .select('id, title, total_marks, duration_minutes')
@@ -345,23 +587,23 @@ export class TestsService {
 
     if (!test) throw new NotFoundException('Test not found');
 
-    const { data: attempts, error } = await supabase
-      .from('attempts')
-      .select(`
-        id, total_score, status, started_at, submitted_at, auto_submitted,
-        users(id, full_name, email)
-      `)
-      .eq('test_id', testId)
-      .eq('status', 'submitted')
-      .order('total_score', { ascending: false });
+    // Paged: a 1000-student cohort exceeds PostgREST's single-response cap, and
+    // a truncated read here silently produced wrong ranks and averages.
+    const rows = await fetchAll<any>(() =>
+      supabase
+        .from('attempts')
+        .select(`
+          id, total_score, status, started_at, submitted_at, auto_submitted,
+          users(id, full_name, email)
+        `)
+        .eq('test_id', testId)
+        .eq('status', 'submitted')
+        .order('total_score', { ascending: false }),
+    );
 
-    if (error) throw new Error(error.message);
-
-    const rows = attempts || [];
     const scores = rows.map((a: any) => Number(a.total_score) || 0);
     const maxMarks = Number(test.total_marks) || 0;
 
-    // How many students were expected to sit this test?
     const { count: assignedCount } = await supabase
       .from('test_assignments')
       .select('*', { count: 'exact', head: true })
@@ -374,46 +616,7 @@ export class TestsService {
         : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2
       : 0;
 
-    // Per-question difficulty across everyone who sat the test.
-    const attemptIds = rows.map((a: any) => a.id);
-    const questionStats: any[] = [];
-
-    if (attemptIds.length) {
-      const { data: answers } = await supabase
-        .from('answers')
-        .select('question_id, is_correct, questions(question_text, subject, topic)')
-        .in('attempt_id', attemptIds);
-
-      const byQuestion = new Map<string, any>();
-      for (const ans of (answers || []) as any[]) {
-        const id = ans.question_id;
-        if (!byQuestion.has(id)) {
-          byQuestion.set(id, {
-            questionId: id,
-            questionText: ans.questions?.question_text || '',
-            subject: ans.questions?.subject || 'Unknown',
-            topic: ans.questions?.topic || null,
-            correct: 0,
-            incorrect: 0,
-            unattempted: 0,
-          });
-        }
-        const stat = byQuestion.get(id);
-        if (ans.is_correct === true) stat.correct += 1;
-        else if (ans.is_correct === false) stat.incorrect += 1;
-        else stat.unattempted += 1;
-      }
-
-      for (const stat of byQuestion.values()) {
-        const answered = stat.correct + stat.incorrect;
-        questionStats.push({
-          ...stat,
-          accuracy: answered > 0 ? Math.round((stat.correct / answered) * 100) : 0,
-        });
-      }
-      // Hardest first — that is what a teacher wants to re-teach.
-      questionStats.sort((a, b) => a.accuracy - b.accuracy);
-    }
+    const questionStats = await this.buildQuestionStats(rows.map((a: any) => a.id));
 
     return {
       test,
@@ -439,111 +642,124 @@ export class TestsService {
     };
   }
 
-  /**
-   * Atomic operation to create a test, link questions, and assign batches in one go.
-   */
-  async saveFullTest(body: {
-    title: string;
-    description?: string;
-    t_type?: string;
-    duration_minutes: number;
-    total_marks: number;
-    status: 'draft' | 'published';
-    question_ids: string[];
-    batch_ids: string[];
-    scheduled_start?: string;
-    scheduled_end?: string;
-    negative_marking?: boolean;
-    negative_marks?: number;
-    subject?: string;
-  }, user: any) {
-    const teacherId = user.id;
+  /** Per-question difficulty across everyone who sat the test. */
+  private async buildQuestionStats(attemptIds: string[]): Promise<any[]> {
+    if (!attemptIds.length) return [];
 
-    // Validate question subjects if restricted
-    if (body.question_ids && body.question_ids.length > 0) {
-      if (user && user.role === 'teacher' && user.subject && user.subject !== 'All') {
-        const { data: qData, error: qError } = await supabase
-          .from('questions')
-          .select('subject')
-          .in('id', body.question_ids);
+    // 1000 attempts x 90 questions is 90k answer rows: chunked by attempt id and
+    // paged within each chunk.
+    const answers = await fetchAllIn<any>(attemptIds, (idChunk) =>
+      supabase
+        .from('answers')
+        .select('question_id, is_correct, questions(question_text, subject, topic)')
+        .in('attempt_id', idChunk),
+    );
 
-        if (qError) throw new BadRequestException('Error validating questions');
-        if (qData.some(q => q.subject !== user.subject)) {
-          throw new BadRequestException(`Access denied: You can only add ${user.subject} questions.`);
-        }
+    const byQuestion = new Map<string, any>();
+    for (const ans of answers) {
+      const id = ans.question_id;
+      if (!byQuestion.has(id)) {
+        byQuestion.set(id, {
+          questionId: id,
+          questionText: ans.questions?.question_text || '',
+          subject: ans.questions?.subject || 'Unknown',
+          topic: ans.questions?.topic || null,
+          correct: 0,
+          incorrect: 0,
+          unattempted: 0,
+        });
       }
+      const stat = byQuestion.get(id);
+      if (ans.is_correct === true) stat.correct += 1;
+      else if (ans.is_correct === false) stat.incorrect += 1;
+      else stat.unattempted += 1;
     }
-    // 1. Create the test
+
+    const stats = [...byQuestion.values()].map((stat) => {
+      const answered = stat.correct + stat.incorrect;
+      return { ...stat, accuracy: answered > 0 ? Math.round((stat.correct / answered) * 100) : 0 };
+    });
+
+    // Hardest first — that is what a teacher wants to re-teach.
+    return stats.sort((a, b) => a.accuracy - b.accuracy);
+  }
+
+  // ── Constructor ─────────────────────────────────────────────────────────────
+
+  /**
+   * Create a test, link its questions and assign batches in one call.
+   *
+   * Supabase's REST API has no multi-statement transaction, so the steps are
+   * ordered to fail safe: the test is created as a draft first and only becomes
+   * `published` once its questions are in place. A failure part-way leaves a
+   * draft the teacher can finish, never a published paper with no questions.
+   */
+  async saveFullTest(body: SaveFullTestDto, user: Requester) {
+    const questionIds = body.question_ids ?? [];
+    const batchIds = body.batch_ids ?? [];
+    const targetStatus = body.status === 'published' ? 'published' : 'draft';
+
+    this.assertWindowSane(body.scheduled_start, body.scheduled_end);
+    await this.assertQuestionsUsable(questionIds, questionIds, user);
+
+    if (targetStatus === 'published' && !questionIds.length) {
+      throw new BadRequestException('Add at least one question before publishing this test.');
+    }
+
+    // 1. Create the test as a draft.
     const { data: test, error: testError } = await supabase
       .from('tests')
       .insert({
-        title: body.title,
-        description: body.description,
-        subject: body.subject,
-        t_type: body.t_type || 'quiz',
-        duration_minutes: body.duration_minutes,
-        total_marks: body.total_marks,
-        status: body.status,
-        // Real columns now, so grading can actually apply the penalty.
-        negative_marking: body.negative_marking === true,
-        negative_marks: body.negative_marking ? Number(body.negative_marks) || 0 : 0,
-        created_by: teacherId
+        ...this.pickWritable(body),
+        status: 'draft',
+        total_marks: 0,
+        created_by: user.id,
       })
       .select()
       .single();
 
     if (testError) throw new Error(`Test creation failed: ${testError.message}`);
-
     const testId = test.id;
 
-    // 2. Link questions
-    if (body.question_ids && body.question_ids.length > 0) {
-      const qRows = body.question_ids.map((qId, idx) => ({
-        test_id: testId,
-        question_id: qId,
-        question_order: idx + 1
-      }));
-      const { error: qError } = await supabase.from('test_questions').insert(qRows);
-      if (qError) throw new Error(`Failed to link questions: ${qError.message}`);
-    }
-
-    // 3. Assign to batches
-    if (body.batch_ids && body.batch_ids.length > 0) {
-      const assignments: any[] = [];
-      for (const batchId of body.batch_ids) {
-        const { data: batchStudents } = await supabase
-          .from('batch_students')
-          .select('student_id')
-          .eq('batch_id', batchId);
-
-        for (const bs of (batchStudents || [])) {
-          assignments.push({
-            test_id: testId,
-            batch_id: batchId,
-            student_id: bs.student_id,
-            scheduled_start: body.scheduled_start || new Date().toISOString(),
-            scheduled_end: body.scheduled_end || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-          });
-        }
+    try {
+      // 2. Link questions.
+      if (questionIds.length) {
+        const qRows = questionIds.map((qId, idx) => ({
+          test_id: testId,
+          question_id: qId,
+          question_order: idx + 1,
+        }));
+        await insertInBatches(qRows, (batch) => supabase.from('test_questions').insert(batch));
       }
 
-      const deduped = this.dedupeAssignments(assignments);
-      if (deduped.length > 0) {
-        const studentIds = deduped.map((d: any) => d.student_id);
-        // Delete existing assignments first, then insert (avoids upsert unique constraint requirement)
-        await supabase
-          .from('test_assignments')
-          .delete()
-          .eq('test_id', testId)
-          .in('student_id', studentIds);
+      const totalMarks = await this.recalculateTotalMarks(testId);
 
-        const { error: assignError } = await supabase
-          .from('test_assignments')
-          .insert(deduped);
-        if (assignError) throw new Error(`Failed to assign tests: ${assignError.message}`);
+      // 3. Assign to batches.
+      if (batchIds.length) {
+        const assignments = await this.buildAssignments(
+          testId,
+          batchIds,
+          body.scheduled_start,
+          body.scheduled_end,
+        );
+        if (assignments.length) await this.replaceAssignments(testId, assignments);
       }
-    }
 
-    return test;
+      // 4. Only now is it safe to publish.
+      const { data: finalTest, error: statusError } = await supabase
+        .from('tests')
+        .update({ status: targetStatus, total_marks: totalMarks })
+        .eq('id', testId)
+        .select()
+        .single();
+
+      if (statusError) throw new Error(statusError.message);
+      return finalTest;
+    } catch (e: any) {
+      // Roll the half-built test back so the library is not littered with
+      // unusable drafts the teacher never asked for.
+      await this.remove(testId, { id: user.id, role: 'admin' }).catch(() => undefined);
+      throw e;
+    }
   }
 }

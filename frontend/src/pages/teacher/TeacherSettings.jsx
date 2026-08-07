@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { User, Lock, LogOut } from 'lucide-react';
-import { apiClient, getStoredUser } from '../../api/client';
+import { apiClient, getStoredUser, passwordProblem } from '../../api/client';
 import './TeacherSettings.css';
 
 /**
@@ -60,7 +60,8 @@ const TeacherSettings = () => {
   };
 
   const handleUpdatePassword = async () => {
-    if (password.newPass.length < 6) return showToast('Password must be at least 6 characters', 'error');
+    const weak = passwordProblem(password.newPass);
+    if (weak) return showToast(weak, 'error');
     if (password.newPass !== password.confirm) return showToast('The two passwords do not match', 'error');
 
     setSavingPassword(true);

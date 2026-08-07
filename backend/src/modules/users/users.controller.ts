@@ -1,10 +1,30 @@
-import { Controller, Get, Post, Patch, Delete, Param, Body, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Patch,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { UsersService } from './users.service';
 import { SupabaseAuthGuard } from '../../common/guards/supabase-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import {
+  AdminCreateUserDto,
+  AdminResetPasswordDto,
+  AdminUserListQueryDto,
+  ChangePasswordDto,
+  StudentListQueryDto,
+  UpdateProfileDto,
+} from './dto/user.dto';
 
 @ApiTags('Users')
 @ApiBearerAuth()
@@ -21,13 +41,15 @@ export class UsersController {
 
   @ApiOperation({ summary: 'Update your name' })
   @Patch('profile')
-  updateProfile(@CurrentUser() user, @Body() body: { full_name: string }) {
+  updateProfile(@CurrentUser() user, @Body() body: UpdateProfileDto) {
     return this.usersService.updateProfile(user.id, body);
   }
 
+  /** Throttled: the current-password check here is an online guessing oracle. */
   @ApiOperation({ summary: 'Change password' })
+  @Throttle({ default: { limit: 5, ttl: 300_000 } })
   @Patch('profile/password')
-  updatePassword(@CurrentUser() user, @Body() body: { currentPassword?: string; newPassword: string }) {
+  updatePassword(@CurrentUser() user, @Body() body: ChangePasswordDto) {
     return this.usersService.updatePassword(user.id, body);
   }
 
@@ -35,25 +57,32 @@ export class UsersController {
   @UseGuards(RolesGuard)
   @Roles('teacher', 'admin')
   @Get('students')
-  listStudents(
-    @Query('search') search?: string,
-    @Query('batchId') batchId?: string,
-  ) {
-    return this.usersService.listStudents({ search, batchId });
+  listStudents(@Query() query: StudentListQueryDto) {
+    return this.usersService.listStudents(query);
   }
 
   @ApiOperation({ summary: '[Teacher] Get one student full profile' })
   @UseGuards(RolesGuard)
   @Roles('teacher', 'admin')
   @Get('students/:id')
-  getStudentProfile(@Param('id') id: string) {
+  getStudentProfile(@Param('id', ParseUUIDPipe) id: string) {
     return this.usersService.getStudentProfile(id);
   }
 
-  @ApiOperation({ summary: 'List all teachers' })
+  /** Staff roster, including work emails — not for students. */
+  @ApiOperation({ summary: '[Teacher] List all teachers' })
+  @UseGuards(RolesGuard)
+  @Roles('teacher', 'admin')
   @Get('teachers')
   listTeachers() {
     return this.usersService.listTeachers();
+  }
+
+  /** What a student needs to route a doubt: names and ids, nothing else. */
+  @ApiOperation({ summary: 'Teacher picker for the doubt form (names only)' })
+  @Get('teachers/directory')
+  listTeacherDirectory() {
+    return this.usersService.listTeachersForStudents();
   }
 
   // ─── Admin-only endpoints ──────────────────────────────────────────────────
@@ -62,28 +91,26 @@ export class UsersController {
   @UseGuards(RolesGuard)
   @Roles('admin')
   @Get('admin/all')
-  listAllUsers(
-    @Query('search') search?: string,
-    @Query('role') role?: string,
-  ) {
-    return this.usersService.listAllUsers({ search, role });
+  listAllUsers(@Query() query: AdminUserListQueryDto) {
+    return this.usersService.listAllUsers(query);
   }
 
   @ApiOperation({ summary: '[Admin] Create a new teacher or student account' })
   @UseGuards(RolesGuard)
   @Roles('admin')
   @Post('admin/create')
-  adminCreateUser(
-    @Body() body: { full_name: string; email: string; password: string; role: 'student' | 'teacher' },
-  ) {
+  adminCreateUser(@Body() body: AdminCreateUserDto) {
     return this.usersService.adminCreateUser(body);
   }
 
-  @ApiOperation({ summary: '[Admin] Reset any user\'s password' })
+  @ApiOperation({ summary: "[Admin] Reset any user's password" })
   @UseGuards(RolesGuard)
   @Roles('admin')
   @Patch('admin/:id/password')
-  adminResetPassword(@Param('id') id: string, @Body() body: { newPassword: string }) {
+  adminResetPassword(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: AdminResetPasswordDto,
+  ) {
     return this.usersService.adminResetPassword(id, body.newPassword);
   }
 
@@ -91,8 +118,7 @@ export class UsersController {
   @UseGuards(RolesGuard)
   @Roles('admin')
   @Delete('admin/:id')
-  adminDeleteUser(@Param('id') id: string) {
-    return this.usersService.adminDeleteUser(id);
+  adminDeleteUser(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user) {
+    return this.usersService.adminDeleteUser(id, user.id);
   }
 }
-

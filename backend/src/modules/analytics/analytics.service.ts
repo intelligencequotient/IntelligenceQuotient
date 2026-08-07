@@ -1,33 +1,42 @@
 import { Injectable } from '@nestjs/common';
 import { supabase } from '../../config/supabase.config';
+import { fetchAll, fetchAllIn } from '../../common/db/query.util';
+import { CacheService } from '../../common/cache/cache.service';
+
+/** Cohort figures move slowly and are read from every teacher dashboard load. */
+const COHORT_TTL_SECONDS = Number(process.env.COHORT_TTL_SECONDS) || 120;
+const COHORT_CACHE_PREFIX = 'analytics:cohort:';
 
 @Injectable()
 export class AnalyticsService {
+  constructor(private readonly cache: CacheService) {}
+
   /** Student's own analytics — for AnalyticsHub page */
   async getStudentAnalytics(studentId: string) {
     // Fetch all submitted attempts
-    const { data: attempts } = await supabase
-      .from('attempts')
-      .select('id, total_score, started_at, submitted_at, tests(title, total_marks)')
-      .eq('student_id', studentId)
-      .eq('status', 'submitted')
-      .order('submitted_at', { ascending: true });
+    const attempts = await fetchAll<any>(() =>
+      supabase
+        .from('attempts')
+        .select('id, total_score, started_at, submitted_at, tests(title, total_marks)')
+        .eq('student_id', studentId)
+        .eq('status', 'submitted')
+        .order('submitted_at', { ascending: true }),
+    );
 
-    const attemptIds = (attempts || []).map((a: any) => a.id);
+    const attemptIds = attempts.map((a) => a.id);
 
     // Per-question accuracy.
     // NOTE: this previously filtered with .eq('attempts.student_id', …), which
     // PostgREST rejects because `attempts` is not embedded in the select — the
     // error was swallowed and every breakdown came back empty. Filter by the
-    // student's own attempt ids instead.
-    const { data: answers, error: answersError } = attemptIds.length
-      ? await supabase
-          .from('answers')
-          .select('is_correct, time_spent_seconds, questions(subject, topic, difficulty)')
-          .in('attempt_id', attemptIds)
-      : { data: [], error: null };
-
-    if (answersError) throw new Error(answersError.message);
+    // student's own attempt ids instead, chunked and paged: a year of testing is
+    // easily more than the 1000 answer rows a single response will return.
+    const answers = await fetchAllIn<any>(attemptIds, (idChunk) =>
+      supabase
+        .from('answers')
+        .select('is_correct, time_spent_seconds, questions(subject, topic, difficulty)')
+        .in('attempt_id', idChunk),
+    );
 
     // Build subject + topic breakdowns
     const subjectMap: Record<string, { correct: number; total: number }> = {};
@@ -35,8 +44,8 @@ export class AnalyticsService {
     let totalTimeSeconds = 0;
     let timedAnswers = 0;
 
-    for (const ans of answers || []) {
-      const q = (ans as any).questions;
+    for (const ans of answers) {
+      const q = ans.questions;
       const subject = q?.subject || 'Unknown';
       const topic = q?.topic;
 
@@ -51,7 +60,7 @@ export class AnalyticsService {
         if (ans.is_correct) topicMap[key].correct += 1;
       }
 
-      const secs = Number((ans as any).time_spent_seconds) || 0;
+      const secs = Number(ans.time_spent_seconds) || 0;
       if (secs > 0) {
         totalTimeSeconds += secs;
         timedAnswers += 1;
@@ -77,10 +86,10 @@ export class AnalyticsService {
     const totalCorrect = Object.values(subjectMap).reduce((s, v) => s + v.correct, 0);
 
     // Score history for chart
-    const scoreHistory = (attempts || []).map((a) => ({
-      title: (a.tests as any)?.title,
+    const scoreHistory = attempts.map((a) => ({
+      title: a.tests?.title,
       score: a.total_score,
-      maxScore: (a.tests as any)?.total_marks,
+      maxScore: a.tests?.total_marks,
       date: a.submitted_at,
     }));
 
@@ -97,11 +106,12 @@ export class AnalyticsService {
       .from('predictions')
       .select('subject, topic, predicted_score, risk_flag, computed_at')
       .eq('student_id', studentId)
-      .order('computed_at', { ascending: false });
+      .order('computed_at', { ascending: false })
+      .limit(100);
 
     return {
-      testsAttempted: attempts?.length || 0,
-      totalScore: (attempts || []).reduce((s, a: any) => s + (Number(a.total_score) || 0), 0),
+      testsAttempted: attempts.length,
+      totalScore: attempts.reduce((s, a: any) => s + (Number(a.total_score) || 0), 0),
       avgAccuracy: totalAnswered > 0 ? Math.round((totalCorrect / totalAnswered) * 100) : 0,
       avgSecondsPerQuestion: timedAnswers > 0 ? Math.round(totalTimeSeconds / timedAnswers) : 0,
       subjectBreakdown,
@@ -114,61 +124,86 @@ export class AnalyticsService {
     };
   }
 
-  /** Cohort analytics — for CohortAnalytics page (teacher view) */
+  /**
+   * Cohort analytics — for CohortAnalytics page (teacher view).
+   *
+   * Cached: every teacher hitting their dashboard used to scan the whole
+   * attempts table, and the id lists involved (one per student in the institute)
+   * were long enough to overflow the request URL outright at cohort scale.
+   */
   async getCohortAnalytics(batchId?: string) {
-    let studentQuery = supabase
-      .from('users')
-      .select('id')
-      .eq('role', 'student');
+    return this.cache.wrap(
+      `${COHORT_CACHE_PREFIX}${batchId || 'all'}`,
+      COHORT_TTL_SECONDS,
+      () => this.computeCohortAnalytics(batchId),
+    );
+  }
+
+  private async computeCohortAnalytics(batchId?: string) {
+    let studentIds: string[];
 
     if (batchId) {
-      const { data: bsIds } = await supabase
-        .from('batch_students')
-        .select('student_id')
-        .eq('batch_id', batchId);
-      const ids = (bsIds || []).map((b: any) => b.student_id);
-      studentQuery = studentQuery.in('id', ids);
+      const members = await fetchAll<{ student_id: string }>(() =>
+        supabase.from('batch_students').select('student_id').eq('batch_id', batchId),
+      );
+      const memberIds = [...new Set(members.map((m) => m.student_id))];
+      if (!memberIds.length) {
+        return { totalStudents: 0, avgScore: 0, atRiskCount: 0, totalAttempts: 0 };
+      }
+
+      // Confirm they are still student accounts, chunked so the URL stays sane.
+      const students = await fetchAllIn<{ id: string }>(memberIds, (idChunk) =>
+        supabase.from('users').select('id').eq('role', 'student').in('id', idChunk),
+      );
+      studentIds = students.map((s) => s.id);
+    } else {
+      const students = await fetchAll<{ id: string }>(() =>
+        supabase.from('users').select('id').eq('role', 'student'),
+      );
+      studentIds = students.map((s) => s.id);
     }
 
-    const { data: students } = await studentQuery;
-    const studentIds = (students || []).map((s) => s.id);
+    if (!studentIds.length) {
+      return { totalStudents: 0, avgScore: 0, atRiskCount: 0, totalAttempts: 0 };
+    }
 
-    if (!studentIds.length) return { totalStudents: 0, avgScore: 0, subjectBreakdown: [] };
+    const attempts = await fetchAllIn<any>(studentIds, (idChunk) =>
+      supabase
+        .from('attempts')
+        .select('student_id, total_score, tests(total_marks)')
+        .in('student_id', idChunk)
+        .eq('status', 'submitted'),
+    );
 
-    // Get all submitted attempts for these students
-    const { data: attempts } = await supabase
-      .from('attempts')
-      .select('student_id, total_score, tests(total_marks)')
-      .in('student_id', studentIds)
-      .eq('status', 'submitted');
+    const avgScore = attempts.length
+      ? Math.round(
+          attempts.reduce((sum, a) => sum + (Number(a.total_score) || 0), 0) / attempts.length,
+        )
+      : 0;
 
-    const avgScore =
-      (attempts || []).length > 0
-        ? Math.round(
-            (attempts || []).reduce((sum, a) => sum + (Number(a.total_score) || 0), 0) /
-              (attempts || []).length,
-          )
-        : 0;
-
-    // At-risk count (students in predictions with risk_flag = true)
-    const { data: riskStudents } = await supabase
-      .from('predictions')
-      .select('student_id')
-      .in('student_id', studentIds)
-      .eq('risk_flag', true);
-
-    const atRiskCount = new Set((riskStudents || []).map((r: any) => r.student_id)).size;
+    const riskStudents = await fetchAllIn<{ student_id: string }>(studentIds, (idChunk) =>
+      supabase
+        .from('predictions')
+        .select('student_id')
+        .in('student_id', idChunk)
+        .eq('risk_flag', true),
+    );
 
     return {
       totalStudents: studentIds.length,
       avgScore,
-      atRiskCount,
-      totalAttempts: attempts?.length || 0,
+      atRiskCount: new Set(riskStudents.map((r) => r.student_id)).size,
+      totalAttempts: attempts.length,
     };
   }
 
   /** Specific student analytics — for StudentProfileDetail teacher view */
   async getStudentAnalyticsForTeacher(studentId: string) {
     return this.getStudentAnalytics(studentId);
+  }
+
+  /** Called after a submission so a fresh score is not masked by a stale cohort. */
+  async invalidateCohortCache(): Promise<void> {
+    await this.cache.invalidate(COHORT_CACHE_PREFIX);
   }
 }

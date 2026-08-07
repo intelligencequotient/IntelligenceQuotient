@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Users, UsersRound, BookOpen, ClipboardList, ArrowRight } from 'lucide-react';
-import { apiClient } from '../../api/client';
+import { apiClient, toList } from '../../api/client';
 import { Link } from 'react-router-dom';
 
 const AdminDashboard = () => {
@@ -19,14 +19,17 @@ const AdminDashboard = () => {
           apiClient.get('/batches'),
           apiClient.get('/tests'),
         ]);
-        const users = allUsers.status === 'fulfilled' ? allUsers.value : [];
-        const batchList = batches.status === 'fulfilled' ? batches.value : [];
-        const testList = tests.status === 'fulfilled' ? tests.value : [];
+        // These endpoints answer a paginated envelope; toList takes the rows
+        // out of either that or a bare array.
+        const users = allUsers.status === 'fulfilled' ? toList(allUsers.value) : [];
+        const batchList = batches.status === 'fulfilled' ? toList(batches.value) : [];
+        const testList = tests.status === 'fulfilled' ? toList(tests.value) : [];
         setStats({
           students: users.filter(u => u.role === 'student').length,
           teachers: users.filter(u => u.role === 'teacher').length,
+          // `total` counts the whole collection, not just this page.
           batches: batchList.length,
-          tests: testList.length,
+          tests: tests.status === 'fulfilled' ? (tests.value?.total ?? testList.length) : 0,
         });
         setRecentUsers(users.slice(0, 6));
       } catch (e) { console.error(e); }

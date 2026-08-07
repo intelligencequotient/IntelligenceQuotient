@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { supabase } from '../../config/supabase.config';
+import { fetchAll, fetchAllIn, insertInBatches } from '../../common/db/query.util';
 
 /**
  * Spaced repetition (SM-2) + lightweight performance prediction.
@@ -83,13 +84,18 @@ export class SpacedRepetitionService {
   private async updateSrsState(studentId: string, answers: GradedAnswer[]) {
     const questionIds = answers.map((a) => a.question_id);
 
-    const { data: existingRows } = await supabase
-      .from('spaced_repetition_state')
-      .select('question_id, repetitions, ease_factor, interval_days, mastery_level')
-      .eq('student_id', studentId)
-      .in('question_id', questionIds);
+    // Chunked: a full JEE paper is ~90 questions and a long custom paper can be
+    // 300, which is ~11 KB of UUIDs in the query string — past what most proxies
+    // will pass through, and the request fails outright rather than degrading.
+    const existingRows = await fetchAllIn<any>(questionIds, (idChunk) =>
+      supabase
+        .from('spaced_repetition_state')
+        .select('question_id, repetitions, ease_factor, interval_days, mastery_level')
+        .eq('student_id', studentId)
+        .in('question_id', idChunk),
+    );
 
-    const existing = new Map((existingRows || []).map((r: any) => [r.question_id, r]));
+    const existing = new Map(existingRows.map((r: any) => [r.question_id, r]));
 
     const now = Date.now();
     const rows = answers.map((answer) => {
@@ -138,11 +144,13 @@ export class SpacedRepetitionService {
       };
     });
 
-    const { error } = await supabase
-      .from('spaced_repetition_state')
-      .upsert(rows, { onConflict: 'student_id,question_id' });
-
-    if (error) throw new Error(`SRS upsert failed: ${error.message}`);
+    await insertInBatches(rows, (batch) =>
+      supabase
+        .from('spaced_repetition_state')
+        .upsert(batch, { onConflict: 'student_id,question_id' }),
+    ).catch((e) => {
+      throw new Error(`SRS upsert failed: ${e.message}`);
+    });
   }
 
   /**
@@ -150,21 +158,27 @@ export class SpacedRepetitionService {
    * answer history. Cheap enough to redo on each submit and always consistent.
    */
   async recomputePredictions(studentId: string): Promise<void> {
-    const { data: attempts } = await supabase
-      .from('attempts')
-      .select('id')
-      .eq('student_id', studentId)
-      .eq('status', 'submitted');
+    const attempts = await fetchAll<{ id: string }>(() =>
+      supabase
+        .from('attempts')
+        .select('id')
+        .eq('student_id', studentId)
+        .eq('status', 'submitted'),
+    );
 
-    const attemptIds = (attempts || []).map((a: any) => a.id);
+    const attemptIds = attempts.map((a) => a.id);
     if (!attemptIds.length) return;
 
-    const { data: answers } = await supabase
-      .from('answers')
-      .select('is_correct, questions(subject, topic, marks)')
-      .in('attempt_id', attemptIds);
+    // Chunked and paged: a student's full history across a year of testing runs
+    // to thousands of answer rows, well past what one response returns.
+    const answers = await fetchAllIn<any>(attemptIds, (idChunk) =>
+      supabase
+        .from('answers')
+        .select('is_correct, questions(subject, topic, marks)')
+        .in('attempt_id', idChunk),
+    );
 
-    if (!answers?.length) return;
+    if (!answers.length) return;
 
     // key -> stats, for both "subject" and "subject::topic" granularity.
     const buckets = new Map<
@@ -183,7 +197,7 @@ export class SpacedRepetitionService {
       if (correct) b.correct += 1;
     };
 
-    for (const a of answers as any[]) {
+    for (const a of answers) {
       const subject = a.questions?.subject || 'Unknown';
       const topic = a.questions?.topic || null;
       const marks = Number(a.questions?.marks) || 4;

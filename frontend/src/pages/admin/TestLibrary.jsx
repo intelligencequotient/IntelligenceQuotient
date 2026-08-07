@@ -9,7 +9,7 @@ const TestLibrary = () => {
 
   useEffect(() => {
     const load = async () => {
-      try { const data = await apiClient.get('/tests'); setTests(data || []); }
+      try { setTests(await apiClient.getList('/tests')); }
       catch { }
       finally { setLoading(false); }
     };

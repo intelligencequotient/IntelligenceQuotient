@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Search, Plus, Trash2, Key, X, RefreshCw } from 'lucide-react';
-import { apiClient } from '../../api/client';
+import { apiClient, PASSWORD_RULE_TEXT, passwordProblem } from '../../api/client';
 
 const UserManagement = () => {
   const [users, setUsers] = useState([]);
@@ -27,8 +27,7 @@ const UserManagement = () => {
     try {
       const params = new URLSearchParams();
       if (search) params.set('search', search);
-      const data = await apiClient.get(`/users/admin/all?${params.toString()}`);
-      setUsers(data || []);
+      setUsers(await apiClient.getList(`/users/admin/all?${params.toString()}`));
     } catch (e) {
       showToast(e.message || 'Failed to load users', 'error');
     } finally { setLoading(false); }
@@ -41,6 +40,7 @@ const UserManagement = () => {
   const handleCreate = async () => {
     if (!newUser.full_name || !newUser.email || !newUser.password)
       return showToast('All fields are required', 'error');
+    if (passwordProblem(newUser.password)) return showToast(PASSWORD_RULE_TEXT, 'error');
     setSaving(true);
     try {
       await apiClient.post('/users/admin/create', newUser);
@@ -53,8 +53,7 @@ const UserManagement = () => {
   };
 
   const handleResetPassword = async () => {
-    if (!newPassword || newPassword.length < 6)
-      return showToast('Password must be at least 6 characters', 'error');
+    if (passwordProblem(newPassword)) return showToast(PASSWORD_RULE_TEXT, 'error');
     setSaving(true);
     try {
       await apiClient.patch(`/users/admin/${showResetModal.id}/password`, { newPassword });
@@ -181,7 +180,7 @@ const UserManagement = () => {
             </div>
             <div className="admin-form-group">
               <label className="admin-form-label">Password</label>
-              <input className="admin-form-input" type="password" placeholder="Min 6 characters" value={newUser.password} onChange={e => setNewUser({ ...newUser, password: e.target.value })} />
+              <input className="admin-form-input" type="password" placeholder="Min 10 chars, mixed case + a digit" value={newUser.password} onChange={e => setNewUser({ ...newUser, password: e.target.value })} />
             </div>
             <div className="admin-form-group">
               <label className="admin-form-label">Role</label>
@@ -211,7 +210,7 @@ const UserManagement = () => {
             </p>
             <div className="admin-form-group">
               <label className="admin-form-label">New Password</label>
-              <input className="admin-form-input" type="password" placeholder="Min 6 characters" value={newPassword} onChange={e => setNewPassword(e.target.value)} />
+              <input className="admin-form-input" type="password" placeholder="Min 10 chars, mixed case + a digit" value={newPassword} onChange={e => setNewPassword(e.target.value)} />
             </div>
             <div className="admin-modal-footer">
               <button className="admin-btn admin-btn-ghost" onClick={() => setShowResetModal(null)}>Cancel</button>

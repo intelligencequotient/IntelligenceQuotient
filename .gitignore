@@ -10,3 +10,18 @@ __pycache__/
 .DS_Store
 backend/temp/
 pdf proccesor/temp/
+
+# Build/test output
+coverage/
+*.log
+*.tsbuildinfo
+
+# Downloaded binaries and archives must never end up in the repo. A 43 MB
+# installer was sitting untracked in the working tree; one `git add .` away from
+# being in history forever.
+*.exe
+*.msi
+*.dmg
+*.zip
+*.7z
+*.tar.gz

@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param, ParseUUIDPipe, Query, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { LeaderboardService } from './leaderboard.service';
 import { SupabaseAuthGuard } from '../../common/guards/supabase-auth.guard';
@@ -23,9 +23,10 @@ export class LeaderboardController {
     return this.leaderboardService.getMyRank(user.id);
   }
 
-  @ApiOperation({ summary: 'Batch-specific leaderboard' })
+  @ApiOperation({ summary: 'Batch-specific leaderboard (members and staff only)' })
   @Get('batch/:batchId')
-  getBatch(@Param('batchId') batchId: string) {
+  async getBatch(@Param('batchId', ParseUUIDPipe) batchId: string, @CurrentUser() user) {
+    await this.leaderboardService.assertCanViewBatch(batchId, user);
     return this.leaderboardService.getBatch(batchId);
   }
 }

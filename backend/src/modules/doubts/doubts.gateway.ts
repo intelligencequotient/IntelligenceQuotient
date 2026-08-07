@@ -40,9 +40,11 @@ interface RoomGrant {
   checkedAt: number;
 }
 
-@WebSocketGateway({
-  cors: { origin: process.env.FRONTEND_URL || 'http://localhost:5173', credentials: true },
-})
+// CORS is applied once, for every gateway, by RedisIoAdapter — it reads the same
+// CORS_ORIGINS allow-list the HTTP server uses. The per-gateway `cors` option
+// that used to live here only ever honoured FRONTEND_URL and defaulted to a port
+// the app is not served on.
+@WebSocketGateway()
 export class DoubtsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
   server: Server;

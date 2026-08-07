@@ -6,13 +6,22 @@
 # the API, the static frontend, and Redis for cache + queues.
 #
 # Copy .env.example to .env first — compose reads it automatically.
+#
+# ── Scaling out ──────────────────────────────────────────────────────────────
+# `docker compose up --scale backend=3` works because Redis is wired in:
+#   - throttling counters live in Redis, so the rate limit is a real limit
+#     rather than one-per-replica;
+#   - Socket.IO uses the Redis adapter, so doubt chat and upload progress reach
+#     clients connected to a different replica;
+#   - the attempt sweeper takes a Redis lock, so abandoned exams get graded once.
+# Add a load balancer in front and drop the fixed host port below when you do.
 
 services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
     # Cache data is disposable; persistence keeps it warm across restarts.
-    command: redis-server --save 60 1 --loglevel warning
+    command: redis-server --save 60 1 --loglevel warning --maxmemory 256mb --maxmemory-policy allkeys-lru
     volumes:
       - redis-data:/data
     healthcheck:
@@ -43,14 +52,25 @@ services:
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       REDIS_URL: redis://redis:6379
       PASSWORD_RESET_REDIRECT_URL: ${PASSWORD_RESET_REDIRECT_URL:-http://localhost:8080/reset-password}
+      THROTTLE_LIMIT: ${THROTTLE_LIMIT:-300}
+      # Swagger enumerates every route and payload; keep it off unless asked for.
+      ENABLE_SWAGGER: ${ENABLE_SWAGGER:-false}
     ports:
       - "3000:3000"
     healthcheck:
-      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:3000/api/docs').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      # A dedicated probe rather than /api/docs, which only existed in
+      # production so this check had something to hit.
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 20s
+    # A cohort-sized PDF run plus a few hundred live exams fits comfortably;
+    # the limit stops one runaway upload taking the host down with it.
+    deploy:
+      resources:
+        limits:
+          memory: 1g
 
   frontend:
     build:
@@ -64,6 +84,11 @@ services:
       - backend
     ports:
       - "8080:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
 volumes:
   redis-data:

@@ -1,5 +1,34 @@
 import { ApiPropertyOptional, ApiProperty } from '@nestjs/swagger';
-import { IsIn, IsOptional, IsString, IsUUID, Length, MaxLength } from 'class-validator';
+import { Type } from 'class-transformer';
+import {
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Length,
+  Max,
+  MaxLength,
+  Min,
+} from 'class-validator';
+
+/** Page size for the student's own doubt history. */
+export class DoubtHistoryQueryDto {
+  @ApiPropertyOptional({ default: 1 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number;
+
+  @ApiPropertyOptional({ default: 50, maximum: 200 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(200)
+  limit?: number;
+}
 
 /** Hard cap on a single chat message, enforced on both REST and WebSocket paths. */
 export const MAX_MESSAGE_LENGTH = 4000;
@@ -39,4 +68,19 @@ export class DoubtQueueQueryDto {
   @IsOptional()
   @IsIn(['pending', 'accepted', 'resolved'])
   status?: string;
+
+  @ApiPropertyOptional({ default: 1 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number;
+
+  @ApiPropertyOptional({ default: 50, maximum: 200 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(200)
+  limit?: number;
 }

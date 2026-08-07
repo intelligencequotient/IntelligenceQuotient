@@ -36,8 +36,8 @@ const PDFPreviewModal = () => {
           if (!cancelled) setTest(data);
         } else {
           // No test chosen — offer a picker rather than a fake paper.
-          const list = await apiClient.get('/tests');
-          if (!cancelled) setTests(list || []);
+          const list = await apiClient.getList('/tests');
+          if (!cancelled) setTests(list);
         }
       } catch (e) {
         if (!cancelled) setError(e.message || 'Could not load the test.');

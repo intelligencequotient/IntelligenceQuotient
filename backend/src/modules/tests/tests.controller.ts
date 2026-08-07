@@ -1,10 +1,30 @@
-import { Controller, Get, Post, Patch, Delete, Param, Body, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Patch,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { TestsService } from './tests.service';
 import { SupabaseAuthGuard } from '../../common/guards/supabase-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import {
+  AssignTeachersDto,
+  AssignTestDto,
+  CreateTestDto,
+  SaveFullTestDto,
+  TestListQueryDto,
+  TestQuestionsDto,
+  UpdateTestDto,
+} from './dto/test.dto';
 
 @ApiTags('Tests')
 @ApiBearerAuth()
@@ -18,74 +38,26 @@ export class TestsController {
   @ApiOperation({ summary: '[Teacher] Create a full test (Metadata + Questions + Assignment)' })
   @UseGuards(RolesGuard) @Roles('teacher', 'admin')
   @Post('constructor')
-  saveFullTest(@Body() body: any, @CurrentUser() user) {
+  saveFullTest(@Body() body: SaveFullTestDto, @CurrentUser() user) {
     return this.testsService.saveFullTest(body, user);
   }
 
   @ApiOperation({ summary: '[Teacher] List all tests' })
   @UseGuards(RolesGuard) @Roles('teacher', 'admin')
   @Get()
-  findAll(@CurrentUser() user, @Query('status') status?: string) {
-    return this.testsService.findAll(user.id, status);
+  findAll(@CurrentUser() user, @Query() query: TestListQueryDto) {
+    return this.testsService.findAll(user, query);
   }
 
   @ApiOperation({ summary: '[Teacher] Create new test' })
   @UseGuards(RolesGuard) @Roles('teacher', 'admin')
   @Post()
-  create(@Body() body: any, @CurrentUser() user) {
-    return this.testsService.create(body, user.id);
-  }
-
-  @ApiOperation({ summary: '[Teacher] Publish a draft test' })
-  @UseGuards(RolesGuard) @Roles('teacher', 'admin')
-  @Patch(':id/publish')
-  publish(@Param('id') id: string, @CurrentUser() user: any) {
-    return this.testsService.publish(id, user);
-  }
-
-  @ApiOperation({ summary: '[Teacher] Add/replace questions on a test' })
-  @UseGuards(RolesGuard) @Roles('teacher', 'admin')
-  @Post(':id/questions')
-  addQuestions(@Param('id') id: string, @Body() body: { question_ids: string[] }, @CurrentUser() user) {
-    return this.testsService.addQuestions(id, body.question_ids, user);
-  }
-
-  @ApiOperation({ summary: '[Admin] Assign teachers (multi) to fill questions for this test' })
-  @UseGuards(RolesGuard) @Roles('admin')
-  @Patch(':id/assign-teacher')
-  assignTeachers(@Param('id') id: string, @Body() body: { teacher_ids: string[] }) {
-    return this.testsService.assignTeachers(id, body.teacher_ids ?? []);
-  }
-
-  @ApiOperation({ summary: '[Teacher] Assign test to batches with schedule' })
-  @UseGuards(RolesGuard) @Roles('teacher', 'admin')
-  @Post(':id/assign')
-  assign(@Param('id') id: string, @Body() body: any, @CurrentUser() user: any) {
-    return this.testsService.assign(id, body, user);
-  }
-
-  @ApiOperation({ summary: '[Teacher] Get all student results for a test' })
-  @UseGuards(RolesGuard) @Roles('teacher', 'admin')
-  @Get(':id/results')
-  getResults(@Param('id') id: string) {
-    return this.testsService.getResults(id);
-  }
-
-  @ApiOperation({ summary: '[Teacher] Update test metadata' })
-  @UseGuards(RolesGuard) @Roles('teacher', 'admin')
-  @Patch(':id')
-  update(@Param('id') id: string, @Body() body: any, @CurrentUser() user: any) {
-    return this.testsService.update(id, body, user);
-  }
-
-  @ApiOperation({ summary: '[Teacher] Delete a test' })
-  @UseGuards(RolesGuard) @Roles('teacher', 'admin')
-  @Delete(':id')
-  remove(@Param('id') id: string, @CurrentUser() user: any) {
-    return this.testsService.remove(id, user);
+  create(@Body() body: CreateTestDto, @CurrentUser() user) {
+    return this.testsService.create(body, user);
   }
 
   // ─── Student Routes ────────────────────────────────────────────────────────
+  // Declared before the `:id` routes so `available` is never read as a test id.
 
   @ApiOperation({ summary: '[Student] Get tests assigned to this student' })
   @UseGuards(RolesGuard) @Roles('student')
@@ -94,16 +66,83 @@ export class TestsController {
     return this.testsService.getStudentTests(user.id);
   }
 
+  // ─── Parameterised routes ──────────────────────────────────────────────────
+
+  @ApiOperation({ summary: '[Teacher] Publish a draft test' })
+  @UseGuards(RolesGuard) @Roles('teacher', 'admin')
+  @Patch(':id/publish')
+  publish(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: any) {
+    return this.testsService.publish(id, user);
+  }
+
+  @ApiOperation({ summary: '[Teacher] Add/replace questions on a test' })
+  @UseGuards(RolesGuard) @Roles('teacher', 'admin')
+  @Post(':id/questions')
+  addQuestions(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: TestQuestionsDto,
+    @CurrentUser() user,
+  ) {
+    return this.testsService.addQuestions(id, body.question_ids, user);
+  }
+
+  @ApiOperation({ summary: '[Admin] Assign teachers (multi) to fill questions for this test' })
+  @UseGuards(RolesGuard) @Roles('admin')
+  @Patch(':id/assign-teacher')
+  assignTeachers(@Param('id', ParseUUIDPipe) id: string, @Body() body: AssignTeachersDto) {
+    return this.testsService.assignTeachers(id, body.teacher_ids ?? []);
+  }
+
+  @ApiOperation({ summary: '[Teacher] Assign test to batches with schedule' })
+  @UseGuards(RolesGuard) @Roles('teacher', 'admin')
+  @Post(':id/assign')
+  assign(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: AssignTestDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.testsService.assign(id, body, user);
+  }
+
+  @ApiOperation({ summary: '[Teacher] Get all student results for a test' })
+  @UseGuards(RolesGuard) @Roles('teacher', 'admin')
+  @Get(':id/results')
+  getResults(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: any) {
+    return this.testsService.getResults(id, user);
+  }
+
   @ApiOperation({ summary: '[Student] Get test questions (no correct answers)' })
   @UseGuards(RolesGuard) @Roles('student')
   @Get(':id/questions')
-  getQuestionsForStudent(@Param('id') id: string) {
-    return this.testsService.getTestQuestionsForStudent(id);
+  getQuestionsForStudent(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: any) {
+    return this.testsService.getTestQuestionsForStudent(id, user.id);
   }
 
+  @ApiOperation({ summary: '[Teacher] Update test metadata' })
+  @UseGuards(RolesGuard) @Roles('teacher', 'admin')
+  @Patch(':id')
+  update(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: UpdateTestDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.testsService.update(id, body, user);
+  }
+
+  @ApiOperation({ summary: '[Teacher] Delete a test' })
+  @UseGuards(RolesGuard) @Roles('teacher', 'admin')
+  @Delete(':id')
+  remove(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: any) {
+    return this.testsService.remove(id, user);
+  }
+
+  /**
+   * Test details. Staff get the paper for editing; a student only gets it when
+   * they are assigned and the window is open — enforced in the service.
+   */
   @ApiOperation({ summary: 'Get test details' })
   @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.testsService.findOne(id);
+  findOne(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: any) {
+    return this.testsService.findOne(id, user);
   }
 }

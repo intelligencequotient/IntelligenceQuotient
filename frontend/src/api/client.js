@@ -111,8 +111,27 @@ async function fetchClient(endpoint, options = {}, { isRetry = false } = {}) {
   return data;
 }
 
+/**
+ * Unwraps a list response.
+ *
+ * Collection endpoints are paginated — they answer `{ data, total, page, limit,
+ * totalPages }` rather than a bare array, because returning every student or
+ * every test in one response stopped being viable at cohort scale. This accepts
+ * either shape so a caller that only wants the rows does not have to care.
+ */
+export function toList(response) {
+  if (Array.isArray(response)) return response;
+  if (Array.isArray(response?.data)) return response.data;
+  return [];
+}
+
 export const apiClient = {
   get: (endpoint, options) => fetchClient(endpoint, { ...options, method: 'GET' }),
+
+  /** GET that always resolves to an array, paginated envelope or not. */
+  getList: async (endpoint, options) =>
+    toList(await fetchClient(endpoint, { ...options, method: 'GET' })),
+
   post: (endpoint, body, options) =>
     fetchClient(endpoint, {
       ...options,
@@ -134,5 +153,20 @@ export const apiClient = {
     window.location.href = '/';
   },
 };
+
+/**
+ * Mirrors the server's password policy so a weak password is rejected before
+ * the round-trip. The server enforces the same rule regardless.
+ */
+export const PASSWORD_RULE_TEXT =
+  'Password must be at least 10 characters and include an uppercase letter, a lowercase letter and a digit.';
+
+export function passwordProblem(password) {
+  if (!password || password.length < 10) return PASSWORD_RULE_TEXT;
+  if (!/[a-z]/.test(password) || !/[A-Z]/.test(password) || !/\d/.test(password)) {
+    return PASSWORD_RULE_TEXT;
+  }
+  return null;
+}
 
 export { BASE_URL };

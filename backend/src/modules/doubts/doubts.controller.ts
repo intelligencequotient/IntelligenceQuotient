@@ -21,7 +21,12 @@ import { SupabaseAuthGuard } from '../../common/guards/supabase-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { CreateDoubtDto, DoubtQueueQueryDto, SendMessageDto } from './dto/doubt.dto';
+import {
+  CreateDoubtDto,
+  DoubtHistoryQueryDto,
+  DoubtQueueQueryDto,
+  SendMessageDto,
+} from './dto/doubt.dto';
 
 const ALLOWED_UPLOAD_MIME = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 
@@ -45,15 +50,15 @@ export class DoubtsController {
   @ApiOperation({ summary: '[Student] Get own doubts history' })
   @UseGuards(RolesGuard) @Roles('student')
   @Get('my')
-  getMyDoubts(@CurrentUser() user) {
-    return this.doubtsService.getMyDoubts(user.id);
+  getMyDoubts(@CurrentUser() user, @Query() query: DoubtHistoryQueryDto) {
+    return this.doubtsService.getMyDoubts(user.id, query.page, query.limit);
   }
 
   @ApiOperation({ summary: '[Teacher] Get doubts queue (unclaimed + own)' })
   @UseGuards(RolesGuard) @Roles('teacher', 'admin')
   @Get()
   findAll(@CurrentUser() user, @Query() query: DoubtQueueQueryDto) {
-    return this.doubtsService.findAll(user, query.status);
+    return this.doubtsService.findAll(user, query.status, query.page, query.limit);
   }
 
   @ApiOperation({ summary: 'Get one doubt details (participants only)' })

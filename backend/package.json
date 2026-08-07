@@ -28,6 +28,7 @@
     "@nestjs/swagger": "^11.4.6",
     "@nestjs/throttler": "^6.5.0",
     "@nestjs/websockets": "^11.1.28",
+    "@socket.io/redis-adapter": "^8.3.0",
     "@supabase/supabase-js": "^2.110.8",
     "@types/jsonwebtoken": "^9.0.10",
     "bullmq": "^6.0.5",
@@ -42,6 +43,10 @@
     "socket.io": "^4.8.3",
     "swagger-ui-express": "^5.0.1",
     "uuid": "^14.0.1"
+  },
+  "//overrides": "@nestjs/swagger 11.4.6 pins js-yaml 5.2.1, vulnerable to exponential parsing time on flow collections (GHSA-pm4m-ph32-ghv5). 5.2.2 fixes it and is API-compatible, so pin forward rather than downgrading Swagger.",
+  "overrides": {
+    "js-yaml": "^5.2.2"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.2.0",

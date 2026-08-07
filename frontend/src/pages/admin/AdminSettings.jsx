@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Shield, Save, Key, User } from 'lucide-react';
-import { apiClient } from '../../api/client';
+import { apiClient, passwordProblem } from '../../api/client';
 
 const AdminSettings = () => {
   const userStr = localStorage.getItem('user');
@@ -33,7 +33,8 @@ const AdminSettings = () => {
   const handleChangePassword = async () => {
     if (!currentPassword || !newPassword) return showToast('Fill in all password fields', 'error');
     if (newPassword !== confirmPassword) return showToast('New passwords do not match', 'error');
-    if (newPassword.length < 6) return showToast('Password must be at least 6 characters', 'error');
+    const weak = passwordProblem(newPassword);
+    if (weak) return showToast(weak, 'error');
     setSaving(true);
     try {
       await apiClient.patch('/users/profile/password', { currentPassword, newPassword });

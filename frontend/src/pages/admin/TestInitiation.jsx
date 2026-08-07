@@ -285,14 +285,14 @@ const TestInitiation = () => {
 
   const fetchTests = useCallback(async () => {
     setLoading(true);
-    try { setTests((await apiClient.get('/tests')) || []); }
+    try { setTests(await apiClient.getList('/tests')); }
     catch { showToast('Failed to load tests', 'error'); }
     finally { setLoading(false); }
   }, []);
 
   const fetchTeachers = useCallback(async () => {
     setTeachersLoading(true);
-    try { setTeachers((await apiClient.get('/users/teachers')) || []); }
+    try { setTeachers(await apiClient.getList('/users/teachers')); }
     catch { /* non-fatal */ }
     finally { setTeachersLoading(false); }
   }, []);

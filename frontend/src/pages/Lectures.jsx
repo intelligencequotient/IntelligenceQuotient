@@ -37,7 +37,7 @@ const Lectures = () => {
     setLoading(true);
     try {
       const query = subject ? `?subject=${encodeURIComponent(subject)}` : '';
-      setLectures((await apiClient.get(`/lectures${query}`)) || []);
+      setLectures(await apiClient.getList(`/lectures${query}`));
     } catch (e) {
       showToast(e.message || 'Could not load lectures', 'error');
       setLectures([]);
@@ -67,7 +67,7 @@ const Lectures = () => {
         title: form.title.trim(),
         subject: form.subject,
         topic: form.topic.trim() || null,
-        drive_url: form.drive_url.trim() || null,
+        drive_url: form.drive_url.trim(),
         duration_minutes: Number(form.duration_minutes) || null,
       });
       showToast('Lecture added.');

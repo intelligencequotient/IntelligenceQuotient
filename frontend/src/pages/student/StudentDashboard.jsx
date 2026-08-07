@@ -13,14 +13,37 @@ import './StudentDashboard.css';
  */
 const EXAM_APP_URL = (import.meta.env.VITE_EXAM_APP_URL || 'http://localhost:5175').replace(/\/$/, '');
 
+/** Is the secure exam app actually serving on its origin? */
+const examAppReachable = async () => {
+  try {
+    // `no-cors` gives an opaque response we cannot read, which is fine: we only
+    // need to distinguish "something answered" from "connection refused".
+    await fetch(`${EXAM_APP_URL}/`, { mode: 'no-cors', cache: 'no-store' });
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 /**
  * Hands the session over to the exam app.
  *
  * The tokens travel in the URL *fragment*: browsers never send it to a server
  * and it never reaches an access log. The refresh token goes too — an exam can
  * run for three hours and an access token expires in one.
+ *
+ * The tab is opened blank first and navigated only once the exam app has
+ * answered. Two reasons:
+ *
+ *  - `window.open` has to be called synchronously inside the click handler or
+ *    the popup blocker kills it, so the reachability check cannot come first.
+ *  - Passing `noopener` makes `window.open` return null *by specification*,
+ *    even on success. The old code read that null as "popup blocked" and fell
+ *    back to `window.location.href = url`, which navigated the portal itself.
+ *    When the exam app was down that took the whole portal to a browser error
+ *    page rather than just failing to launch.
  */
-const launchExam = (testId) => {
+const launchExam = async (testId, onError) => {
   const token = localStorage.getItem('access_token');
   const refresh = localStorage.getItem('refresh_token');
 
@@ -30,10 +53,24 @@ const launchExam = (testId) => {
 
   const url = `${EXAM_APP_URL}/exam/instructions/${testId}#${fragment.toString()}`;
 
-  // Open in a new tab so the portal stays put behind the exam — the launcher's
-  // Cancel button calls window.close(), which only works on a scripted window.
-  const win = window.open(url, '_blank', 'noopener,noreferrer');
-  if (!win) window.location.href = url;
+  // Keep the handle: the launcher's Cancel button calls window.close(), which
+  // only works on a window this script opened.
+  const win = window.open('', '_blank');
+
+  if (!win) {
+    onError('Allow pop-ups for this site, then start the test again.');
+    return;
+  }
+
+  if (!(await examAppReachable())) {
+    win.close();
+    onError(
+      `The secure exam app is not responding at ${EXAM_APP_URL}. It runs separately from the portal — start it and try again.`,
+    );
+    return;
+  }
+
+  win.location.replace(url);
 };
 
 const SUBJECTS = [
@@ -58,6 +95,8 @@ const StudentDashboard = () => {
   const [analytics, setAnalytics] = useState(null);
   const [rank, setRank] = useState(null);
   const [loading, setLoading] = useState(true);
+  /** Surfaced when the exam app cannot be reached, instead of a dead browser tab. */
+  const [launchError, setLaunchError] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -147,6 +186,15 @@ const StudentDashboard = () => {
         </div>
       </div>
 
+      {launchError && (
+        <div className="sd-launch-error" role="alert">
+          <span>{launchError}</span>
+          <button type="button" onClick={() => setLaunchError('')} aria-label="Dismiss">
+            &times;
+          </button>
+        </div>
+      )}
+
       <div className="section-header animate-slide-up">
         <h2>Performance Overview</h2>
         <Link to="/student/analytics" className="view-all-link">
@@ -228,7 +276,7 @@ const StudentDashboard = () => {
                   ) : state === 'open' ? (
                     <button
                       className="btn btn-primary"
-                      onClick={() => launchExam(test.id)}
+                      onClick={() => launchExam(test.id, setLaunchError)}
                     >
                       <PlayCircle size={17} /> {inProgress ? 'Resume Test' : 'Start Test'}
                     </button>

@@ -24,26 +24,48 @@ All are idempotent — safe to re-run.
 | `006_scale_indexes.sql` | Indexes for the queries that only hurt at cohort scale — rank/percentile counts, per-question breakdowns, assignment lookups |
 | `007_test_paper_pattern.sql` | Separates a test's paper pattern (`jee_main`, `custom`) from the `test_type` enum. Without it patterns are not stored, but test creation still works |
 
-If you use the proctored `exam/` service, also run `exam/backend/schema.sql`
-followed by `exam/backend/migrations/001_exam_hardening.sql`. **The hardening
-migration is not optional**: `schema.sql` grants `FOR ALL USING (true)` on the
-exam tables, which is readable and writable by anyone holding the publishable
-anon key — every student, from the browser console.
+**The proctored exam module needs its own schema.** Run `exam/backend/schema.sql`
+and then `exam/backend/migrations/001_exam_hardening.sql`. Until you do,
+"Start Test" reaches the exam app and fails there — the API answers 503 and logs
+which files to run, because `exam_sessions` does not exist yet.
+
+The hardening migration is **not optional**: `schema.sql` grants
+`FOR ALL USING (true)` on the exam tables, which makes them readable and
+writable by anyone holding the publishable anon key — every student, from the
+browser console.
 
 Then copy `.env.example` to `.env` (repo root) and `backend/.env`, and fill in
 your Supabase and Groq keys.
 
-### 1. Start the Backend (NestJS)
+### 1. Start everything
+
+The platform is **four** services, not two — the proctored exam module is a
+separate app on its own ports. Starting only some of them is the usual reason
+"Start Test" fails to launch.
+
+| Service | Port | Directory |
+|---|---|---|
+| Portal API | 3000 | `backend` |
+| Portal web | 5173 | `frontend` |
+| Exam API | 3001 | `exam/backend` |
+| Exam web | 5175 | `exam/frontend` |
+
+From the repo root, once:
+
 ```bash
-cd backend && npm install && npm run start:dev
+npm run install:all
 ```
+
+Then to run all four together:
+
+```bash
+npm run dev
+```
+
 *Python 3 with `PyMuPDF`, `Pillow` and `groq` must be on PATH for the PDF pipeline —
 see `backend/scripts/pdf-processor/requirements.txt`.*
 
-### 2. Start the Frontend (React / Vite)
-```bash
-cd frontend && npm install && npm run dev
-```
+To run one at a time instead: `npm run dev:api`, `dev:web`, `dev:exam-api`, `dev:exam-web`.
 
 ### Or run the whole stack with Docker
 ```bash

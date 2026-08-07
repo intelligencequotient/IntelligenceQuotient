@@ -2,8 +2,10 @@ import {
   ForbiddenException,
   Injectable,
   InternalServerErrorException,
+  Logger,
   NotFoundException,
   BadRequestException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import * as dotenv from 'dotenv';
@@ -44,6 +46,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-
 
 @Injectable()
 export class AppService {
+  private readonly logger = new Logger(AppService.name);
   private supabase: SupabaseClient;
 
   constructor() {
@@ -60,6 +63,37 @@ export class AppService {
     this.supabase = createClient(supabaseUrl, supabaseServiceKey, {
       auth: { autoRefreshToken: false, persistSession: false },
     });
+  }
+
+  // ── Schema guard ───────────────────────────────────────────────────────────
+
+  /**
+   * True when PostgREST is saying the exam tables simply are not there.
+   *
+   * `exam/backend/schema.sql` is a separate manual step from the main backend's
+   * migrations, so it is easy to deploy this service against a database that has
+   * never had it applied. Without this check the first student to press "Start
+   * Test" got "Failed to create session" with nothing pointing at the cause.
+   */
+  private isMissingSchema(error: any): boolean {
+    const code = String(error?.code || '');
+    if (code === 'PGRST205' || code === '42P01') return true;
+    return /could not find the table|does not exist|schema cache/i.test(
+      String(error?.message || ''),
+    );
+  }
+
+  /** Rethrows a missing-schema error as something actionable, in the logs at least. */
+  private assertSchemaPresent(error: any, operation: string): void {
+    if (!error || !this.isMissingSchema(error)) return;
+
+    this.logger.error(
+      `${operation} failed: the exam tables are missing. Run exam/backend/schema.sql and ` +
+        'then exam/backend/migrations/001_exam_hardening.sql against this Supabase project.',
+    );
+    throw new ServiceUnavailableException(
+      'The secure exam service is not set up yet. Ask an administrator to run the exam schema.',
+    );
   }
 
   // ── Ownership ──────────────────────────────────────────────────────────────
@@ -81,6 +115,7 @@ export class AppService {
       .eq('id', sessionId)
       .single();
 
+    this.assertSchemaPresent(error, 'Loading an exam session');
     if (error || !session) throw new NotFoundException('Exam session not found');
     if (session.student_id !== studentId) {
       throw new ForbiddenException('This exam session does not belong to you.');
@@ -130,12 +165,14 @@ export class AppService {
       throw new ForbiddenException('The window for this test has closed.');
     }
 
-    const { data: existing } = await this.supabase
+    const { data: existing, error: existingError } = await this.supabase
       .from('exam_sessions')
       .select('*')
       .eq('exam_id', examId)
       .eq('student_id', studentId)
       .maybeSingle();
+
+    this.assertSchemaPresent(existingError, 'Starting an exam session');
 
     if (existing && existing.status !== 'in_progress') {
       throw new BadRequestException('You have already completed this exam.');
@@ -168,6 +205,7 @@ export class AppService {
       .single();
 
     if (createError) {
+      this.assertSchemaPresent(createError, 'Creating an exam session');
       // Two tabs, or a double-click on a slow connection, can both reach the
       // insert. `exam_sessions_student_exam_unique` stops the duplicate; the
       // loser of the race resumes the session the winner created.

@@ -46,12 +46,29 @@ export class CreateTestDto {
   @MaxLength(100)
   subject?: string;
 
-  /** Free-form: the UI keeps adding paper presets (jee_main, jee_advanced, …). */
-  @ApiPropertyOptional({ example: 'jee_main' })
+  /**
+   * Test kind, or a paper pattern.
+   *
+   * The column behind this is the `public.test_type` enum
+   * (quiz | mock_test | assignment | exam), but the admin console has always
+   * sent a *pattern* here ('jee_main', 'custom'). The service accepts either and
+   * splits them; validation stays permissive so the existing console keeps
+   * working, and an unrecognised value comes back as a 400 naming the options.
+   */
+  @ApiPropertyOptional({
+    example: 'jee_main',
+    description: 'quiz | mock_test | assignment | exam, or a pattern: jee_main | jee_advanced | neet | custom',
+  })
   @IsOptional()
   @IsString()
   @MaxLength(50)
   t_type?: string;
+
+  /** Explicit paper pattern. Preferred over overloading `t_type`. */
+  @ApiPropertyOptional({ enum: ['jee_main', 'jee_advanced', 'neet', 'custom'] })
+  @IsOptional()
+  @IsIn(['jee_main', 'jee_advanced', 'neet', 'custom'])
+  paper_pattern?: string;
 
   @ApiProperty({ minimum: 1, maximum: 600 })
   @Type(() => Number)

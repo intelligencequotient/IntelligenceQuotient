@@ -1,10 +1,12 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   BadRequestException,
   ForbiddenException,
 } from '@nestjs/common';
 import { supabase } from '../../config/supabase.config';
+import { throwSupabaseError } from '../../common/db/supabase-error';
 import {
   fetchAll,
   fetchAllIn,
@@ -33,15 +35,42 @@ const WRITABLE_COLUMNS = [
   'title',
   'description',
   'subject',
-  't_type',
   'duration_minutes',
   'negative_marking',
   'negative_marks',
   'instructions',
 ] as const;
 
+/**
+ * Members of the `public.test_type` enum. Anything outside this set is rejected
+ * by Postgres with 22P02, so it is mapped rather than passed through.
+ */
+const TEST_TYPE_VALUES = ['quiz', 'mock_test', 'assignment', 'exam'] as const;
+
+/** Patterns `tests.paper_pattern` accepts (see migration 007). */
+const PAPER_PATTERNS = ['jee_main', 'jee_advanced', 'neet', 'custom'] as const;
+
+/**
+ * The console sends the exam *pattern* in `t_type` — 'jee_main', 'custom' — but
+ * the column is an enum of test *kinds*. They are different axes: a JEE Main
+ * mock and a custom mock are both `mock_test`, yet they have different section
+ * layouts and different publish rules. This maps a pattern onto the enum; the
+ * pattern itself is stored separately in `paper_pattern`.
+ */
+const PATTERN_TO_TYPE: Record<string, (typeof TEST_TYPE_VALUES)[number]> = {
+  jee_main: 'mock_test',
+  jee_advanced: 'mock_test',
+  neet: 'mock_test',
+  custom: 'quiz',
+};
+
 @Injectable()
 export class TestsService {
+  private readonly logger = new Logger(TestsService.name);
+
+  /** Whether migration 007 has been applied. Probed lazily, then remembered. */
+  private hasPaperPattern: boolean | null = null;
+
   // ── Authorisation ───────────────────────────────────────────────────────────
 
   /**
@@ -136,7 +165,100 @@ export class TestsService {
     }
     // Negative marks only mean anything when the scheme is on.
     if (out.negative_marking === false) out.negative_marks = 0;
+
+    Object.assign(out, this.resolveTypeAndPattern(body));
     return out;
+  }
+
+  /**
+   * Works out the enum `t_type` and the `paper_pattern` from whatever the client
+   * sent in either field.
+   *
+   * Accepts a pattern in `t_type` for compatibility with the existing console,
+   * which has always used that field for 'jee_main' / 'custom'.
+   */
+  private resolveTypeAndPattern(body: Record<string, any>): Record<string, any> {
+    const raw = String(body?.paper_pattern ?? body?.t_type ?? '').trim().toLowerCase();
+    if (!raw) return {};
+
+    // A genuine enum member: pass it through, no pattern implied.
+    if ((TEST_TYPE_VALUES as readonly string[]).includes(raw)) {
+      return { t_type: raw };
+    }
+
+    if ((PAPER_PATTERNS as readonly string[]).includes(raw)) {
+      return { t_type: PATTERN_TO_TYPE[raw], paper_pattern: raw };
+    }
+
+    throw new BadRequestException(
+      `Unknown test type "${raw}". Expected one of: ${[...TEST_TYPE_VALUES, ...PAPER_PATTERNS].join(', ')}.`,
+    );
+  }
+
+  /**
+   * Retries a write without `paper_pattern` when migration 007 has not been run.
+   *
+   * Same approach AttemptsService takes for migration 005: a database one
+   * migration behind degrades instead of failing every test creation.
+   */
+  private async insertTest(row: Record<string, any>): Promise<any> {
+    const { data, error } = await supabase.from('tests').insert(row).select().single();
+    if (!error) {
+      if (this.hasPaperPattern === null) this.hasPaperPattern = true;
+      return data;
+    }
+
+    if ('paper_pattern' in row && this.isMissingColumn(error)) {
+      if (this.hasPaperPattern === null) {
+        this.hasPaperPattern = false;
+        this.logger.warn(
+          'tests.paper_pattern is missing — run backend/migrations/007_test_paper_pattern.sql. ' +
+            'Paper patterns will not be stored until then.',
+        );
+      }
+      const { paper_pattern: _dropped, ...withoutPattern } = row;
+      const retry = await supabase.from('tests').insert(withoutPattern).select().single();
+      if (retry.error) throwSupabaseError(retry.error, 'tests.insert');
+      return retry.data;
+    }
+
+    throwSupabaseError(error, 'tests.insert');
+  }
+
+  /** True when PostgREST is saying the column simply is not there. */
+  private isMissingColumn(error: any): boolean {
+    const code = String(error?.code || '');
+    if (code === 'PGRST204' || code === '42703') return true;
+    return /column .* does not exist|schema cache/i.test(String(error?.message || ''));
+  }
+
+  /**
+   * Whether `tests.paper_pattern` exists, probed once with a cheap head request.
+   *
+   * Reads have to know before they build a select list: naming a column that
+   * does not exist fails the whole query, so on a database that has not run
+   * migration 007 the library page would break rather than just omit a field.
+   */
+  private async paperPatternAvailable(): Promise<boolean> {
+    if (this.hasPaperPattern !== null) return this.hasPaperPattern;
+
+    const { error } = await supabase
+      .from('tests')
+      .select('paper_pattern', { head: true, count: 'exact' })
+      .limit(1);
+
+    this.hasPaperPattern = !error || !this.isMissingColumn(error);
+    if (!this.hasPaperPattern) {
+      this.logger.warn(
+        'tests.paper_pattern is missing — run backend/migrations/007_test_paper_pattern.sql.',
+      );
+    }
+    return this.hasPaperPattern;
+  }
+
+  /** Appends `paper_pattern` to a select list only when the column exists. */
+  private async withPattern(columns: string): Promise<string> {
+    return (await this.paperPatternAvailable()) ? `${columns}, paper_pattern` : columns;
   }
 
   // ── Teacher reads ───────────────────────────────────────────────────────────
@@ -155,15 +277,17 @@ export class TestsService {
     const limit = Math.min(Math.max(Number(filters.limit) || 50, 1), 200);
     const from = (page - 1) * limit;
 
+    const base = await this.withPattern(
+      `id, title, description, subject, t_type, status, duration_minutes,
+       total_marks, negative_marking, negative_marks, created_at, created_by`,
+    );
+
     let query = supabase
       .from('tests')
       .select(
-        `
-        id, title, description, subject, t_type, status, duration_minutes,
-        total_marks, negative_marking, negative_marks, created_at, created_by,
+        `${base},
         test_teachers(teacher_id, subject, users(id, full_name, email)),
-        test_questions(question_id, questions(subject))
-      `,
+        test_questions(question_id, questions(subject))`,
         { count: 'exact' },
       )
       .order('created_at', { ascending: false })
@@ -202,13 +326,17 @@ export class TestsService {
       await this.assertCanManage(id, user);
     }
 
+    const base = await this.withPattern(
+      `id, title, description, subject, t_type, status, duration_minutes, total_marks,
+       negative_marking, negative_marks, created_at, created_by`,
+    );
+
     const { data, error } = await supabase
       .from('tests')
-      .select(`
-        id, title, description, subject, t_type, status, duration_minutes, total_marks,
-        negative_marking, negative_marks, created_at, created_by,
-        test_questions(question_order, marks_override, questions(id, subject, topic, question_text, options, difficulty, q_type, marks, image_url))
-      `)
+      .select(
+        `${base},
+        test_questions(question_order, marks_override, questions(id, subject, topic, question_text, options, difficulty, q_type, marks, image_url))`,
+      )
       .eq('id', id)
       .single();
     if (error || !data) throw new NotFoundException('Test not found');
@@ -219,24 +347,27 @@ export class TestsService {
 
   /** Create a new test (starts as 'draft') */
   async create(body: CreateTestDto, user: Requester) {
-    const { data, error } = await supabase
-      .from('tests')
-      .insert({
-        ...this.pickWritable(body),
-        created_by: user.id,
-        status: 'draft',
-        total_marks: 0,
-      })
-      .select()
-      .single();
-    if (error) throw new Error(error.message);
+    const data = await this.insertTest({
+      ...this.pickWritable(body),
+      created_by: user.id,
+      status: 'draft',
+      total_marks: 0,
+    });
 
     // Optionally assign teachers right away
     const ids = Array.isArray(body.teacher_ids) ? body.teacher_ids : [];
     if (ids.length > 0) {
-      await supabase
+      const { error: teacherError } = await supabase
         .from('test_teachers')
         .insert(ids.map((tid) => ({ test_id: data.id, teacher_id: tid })));
+
+      // The shell exists either way; a failed assignment is worth surfacing
+      // rather than silently swallowing, which is what happened before.
+      if (teacherError) {
+        this.logger.error(
+          `Test ${data.id} created but teacher assignment failed: ${teacherError.message}`,
+        );
+      }
     }
 
     return data;
@@ -531,11 +662,14 @@ export class TestsService {
     if (!assignments.length) return [];
 
     // Step 2: Fetch the tests separately (avoids triggering batch_students RLS)
+    const studentTestColumns = await this.withPattern(
+      'id, title, description, t_type, duration_minutes, total_marks, status',
+    );
     const testIds = [...new Set(assignments.map((a) => a.test_id))];
     const tests = await fetchAllIn<any>(testIds, (idChunk) =>
       supabase
         .from('tests')
-        .select('id, title, description, t_type, duration_minutes, total_marks, status')
+        .select(studentTestColumns)
         .in('id', idChunk)
         .eq('status', 'published'),
     );
@@ -707,18 +841,12 @@ export class TestsService {
     }
 
     // 1. Create the test as a draft.
-    const { data: test, error: testError } = await supabase
-      .from('tests')
-      .insert({
-        ...this.pickWritable(body),
-        status: 'draft',
-        total_marks: 0,
-        created_by: user.id,
-      })
-      .select()
-      .single();
-
-    if (testError) throw new Error(`Test creation failed: ${testError.message}`);
+    const test = await this.insertTest({
+      ...this.pickWritable(body),
+      status: 'draft',
+      total_marks: 0,
+      created_by: user.id,
+    });
     const testId = test.id;
 
     try {

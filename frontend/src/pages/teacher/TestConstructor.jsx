@@ -64,7 +64,7 @@ const TestConstructor = () => {
           ...prev,
           title: data.title,
           subject: data.subject || prev.subject,
-          t_type: data.t_type || 'quiz',
+          t_type: data.paper_pattern || data.t_type || 'quiz',
           duration: data.duration_minutes,
           totalMarks: data.total_marks,
           // Read from the real columns, falling back to the old description
@@ -110,6 +110,8 @@ const TestConstructor = () => {
         title: testData.title || 'Untitled Test',
         description: `Subject: ${testData.subject}`,
         subject: testData.subject,
+        // May be a plain kind ('quiz') or a pattern ('jee_main'); the API accepts
+        // either here and splits them server-side.
         t_type: testData.t_type,
         duration_minutes: parseInt(testData.duration, 10),
         total_marks: testData.totalMarks,

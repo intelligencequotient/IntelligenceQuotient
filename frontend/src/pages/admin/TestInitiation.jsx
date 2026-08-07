@@ -331,7 +331,7 @@ const TestInitiation = () => {
     const payload = {
       title: form.title,
       subject: preset ? 'Mixed' : (customSections.length === 1 ? customSections[0].subject : 'Mixed'),
-      t_type: testType,
+      paper_pattern: testType,
       duration_minutes: preset ? preset.duration_minutes : Number(customDuration),
       instructions: form.instructions.trim() || autoInstructions,
       status: 'draft',
@@ -445,8 +445,11 @@ const TestInitiation = () => {
                              <div style={{ width: '100%', fontSize: 10, fontWeight: 700, color: 'var(--text-secondary)', textTransform: 'uppercase', marginBottom: 2, letterSpacing: '0.05em' }}>Questions Progress:</div>
                              {['Physics', 'Chemistry', 'Mathematics', 'Biology'].map(sub => {
                                 const count = (t.test_questions || []).filter(tq => tq.questions?.subject === sub).length;
-                                const isCustom = t.t_type === 'custom';
-                                const target = t.t_type === 'jee_advanced' ? 18 : (isCustom ? '?' : 30);
+                                // `paper_pattern` is the real home for this; `t_type` is the
+                                // fallback for rows created before migration 007.
+                                const pattern = t.paper_pattern || t.t_type;
+                                const isCustom = pattern === 'custom';
+                                const target = pattern === 'jee_advanced' ? 18 : (isCustom ? '?' : 30);
                                 
                                 if (sub === 'Biology') return null;
                                 if (isCustom && count === 0) return null;

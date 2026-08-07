@@ -204,6 +204,99 @@ describe('TestsService', () => {
     });
   });
 
+  /**
+   * `tests.t_type` is the `public.test_type` enum (quiz | mock_test | assignment
+   * | exam), but the admin console has always sent an exam *pattern* there.
+   * Postgres answered `22P02 invalid input value for enum test_type: "jee_main"`
+   * and every "Create Test Shell" failed.
+   */
+  describe('test type vs paper pattern', () => {
+    const created = () => supabaseMock.queueResult('tests', { data: { id: TEST_ID } });
+
+    it.each([
+      ['jee_main', 'mock_test'],
+      ['jee_advanced', 'mock_test'],
+      ['neet', 'mock_test'],
+      ['custom', 'quiz'],
+    ])('maps the %s pattern onto the %s enum member', async (pattern, expectedType) => {
+      created();
+
+      await service.create({ title: 'T', duration_minutes: 60, t_type: pattern } as any, TEACHER);
+
+      const write = supabaseMock.calls.find((c) => c.op === 'insert');
+      expect(write?.payload).toMatchObject({ t_type: expectedType, paper_pattern: pattern });
+    });
+
+    it('passes a genuine enum member straight through, with no pattern', async () => {
+      created();
+
+      await service.create({ title: 'T', duration_minutes: 60, t_type: 'quiz' } as any, TEACHER);
+
+      const write = supabaseMock.calls.find((c) => c.op === 'insert');
+      expect(write?.payload).toMatchObject({ t_type: 'quiz' });
+      expect(write?.payload).not.toHaveProperty('paper_pattern');
+    });
+
+    it('prefers an explicit paper_pattern over t_type', async () => {
+      created();
+
+      await service.create(
+        { title: 'T', duration_minutes: 60, t_type: 'quiz', paper_pattern: 'jee_main' } as any,
+        TEACHER,
+      );
+
+      const write = supabaseMock.calls.find((c) => c.op === 'insert');
+      expect(write?.payload).toMatchObject({ t_type: 'mock_test', paper_pattern: 'jee_main' });
+    });
+
+    // Better a 400 naming the options than a 500 the caller cannot act on.
+    it('rejects an unknown value with a message listing what is accepted', async () => {
+      await expect(
+        service.create({ title: 'T', duration_minutes: 60, t_type: 'gate_2027' } as any, TEACHER),
+      ).rejects.toThrow(/Unknown test type "gate_2027".*quiz.*jee_main/s);
+    });
+
+    it('omits t_type entirely when the client sent none', async () => {
+      created();
+
+      await service.create({ title: 'T', duration_minutes: 60 } as any, TEACHER);
+
+      const write = supabaseMock.calls.find((c) => c.op === 'insert');
+      expect(write?.payload).not.toHaveProperty('t_type');
+    });
+
+    // A database that has not run migration 007 should still create tests.
+    it('retries without paper_pattern when the column does not exist', async () => {
+      supabaseMock.queueResult('tests', {
+        data: null,
+        error: { code: '42703', message: 'column "paper_pattern" does not exist' },
+      });
+      supabaseMock.queueResult('tests', { data: { id: TEST_ID } });
+
+      await expect(
+        service.create({ title: 'T', duration_minutes: 60, t_type: 'jee_main' } as any, TEACHER),
+      ).resolves.toMatchObject({ id: TEST_ID });
+
+      const writes = supabaseMock.calls.filter((c) => c.op === 'insert');
+      expect(writes).toHaveLength(2);
+      // First attempt carried it; the retry dropped it but kept the mapped enum.
+      expect(writes[0].payload).toHaveProperty('paper_pattern');
+      expect(writes[1].payload).not.toHaveProperty('paper_pattern');
+      expect(writes[1].payload).toMatchObject({ t_type: 'mock_test' });
+    });
+
+    it('surfaces a genuine enum rejection as a 400, not a 500', async () => {
+      supabaseMock.queueResult('tests', {
+        data: null,
+        error: { code: '22P02', message: 'invalid input value for enum test_type: "bogus"' },
+      });
+
+      await expect(
+        service.create({ title: 'T', duration_minutes: 60, t_type: 'quiz' } as any, TEACHER),
+      ).rejects.toMatchObject({ status: 400 });
+    });
+  });
+
   describe('publish', () => {
     it('refuses to publish a paper with no questions on it', async () => {
       supabaseMock.queueResult('tests', { data: { id: TEST_ID, created_by: TEACHER.id } });

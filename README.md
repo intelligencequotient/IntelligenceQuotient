@@ -22,6 +22,7 @@ All are idempotent — safe to re-run.
 | `002` – `004` | Test format columns, `assigned_to`, the `test_teachers` junction table |
 | `005_exam_session_sync.sql` | Answer palette state, `attempt_violations`, one assignment row per (test, student) |
 | `006_scale_indexes.sql` | Indexes for the queries that only hurt at cohort scale — rank/percentile counts, per-question breakdowns, assignment lookups |
+| `007_test_paper_pattern.sql` | Separates a test's paper pattern (`jee_main`, `custom`) from the `test_type` enum. Without it patterns are not stored, but test creation still works |
 
 If you use the proctored `exam/` service, also run `exam/backend/schema.sql`
 followed by `exam/backend/migrations/001_exam_hardening.sql`. **The hardening

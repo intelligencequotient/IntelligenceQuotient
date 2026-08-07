@@ -233,27 +233,45 @@ export class TestsService {
   }
 
   /**
-   * Whether `tests.paper_pattern` exists, probed once with a cheap head request.
+   * Whether `tests.paper_pattern` exists, probed once and then remembered.
    *
    * Reads have to know before they build a select list: naming a column that
    * does not exist fails the whole query, so on a database that has not run
-   * migration 007 the library page would break rather than just omit a field.
+   * migration 007 the test library would break rather than just omit a field.
+   *
+   * Two things this has to get right, both learned the hard way:
+   *
+   *  - The probe must NOT use `{ head: true }`. A HEAD response carries no
+   *    body, so PostgREST's error payload never arrives and postgrest-js
+   *    surfaces `{ message: '' }` with no code — indistinguishable from
+   *    success to any inspection of the error. A one-row GET returns the real
+   *    `42703`.
+   *  - An inconclusive probe must fall back to *absent*. Omitting an optional
+   *    column degrades gracefully; wrongly including one fails every read.
    */
   private async paperPatternAvailable(): Promise<boolean> {
     if (this.hasPaperPattern !== null) return this.hasPaperPattern;
 
-    const { error } = await supabase
-      .from('tests')
-      .select('paper_pattern', { head: true, count: 'exact' })
-      .limit(1);
+    const { error } = await supabase.from('tests').select('paper_pattern').limit(1);
 
-    this.hasPaperPattern = !error || !this.isMissingColumn(error);
-    if (!this.hasPaperPattern) {
-      this.logger.warn(
-        'tests.paper_pattern is missing — run backend/migrations/007_test_paper_pattern.sql.',
-      );
+    if (!error) {
+      this.hasPaperPattern = true;
+      return true;
     }
-    return this.hasPaperPattern;
+
+    if (this.isMissingColumn(error)) {
+      this.hasPaperPattern = false;
+      this.logger.warn(
+        'tests.paper_pattern is missing — run backend/migrations/007_test_paper_pattern.sql. ' +
+          'Paper patterns will not be stored or returned until then.',
+      );
+      return false;
+    }
+
+    // Something else went wrong (a blip, a permissions change). Leave the result
+    // uncached so the next call re-probes, and omit the column meanwhile.
+    this.logger.warn(`Could not probe tests.paper_pattern: ${error.message}`);
+    return false;
   }
 
   /** Appends `paper_pattern` to a select list only when the column exists. */

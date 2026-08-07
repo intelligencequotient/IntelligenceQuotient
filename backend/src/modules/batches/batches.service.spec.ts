@@ -54,7 +54,8 @@ describe('BatchesService', () => {
       supabaseMock.queueResult('batches', { data: [] });
       await service.findAll(OWNER);
       // The scoping is a query filter; assert the call shape rather than data.
-      expect(supabaseMock.calls).toEqual([{ table: 'batches', op: 'select', payload: undefined }]);
+      expect(supabaseMock.calls).toHaveLength(1);
+      expect(supabaseMock.calls[0]).toMatchObject({ table: 'batches', op: 'select' });
     });
 
     it('lets an admin see every batch', async () => {

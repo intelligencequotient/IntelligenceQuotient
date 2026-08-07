@@ -297,6 +297,88 @@ describe('TestsService', () => {
     });
   });
 
+  /**
+   * Reads have to know whether migration 007 has run before they name the
+   * column, because naming one that does not exist fails the entire query —
+   * which is how `GET /tests` started returning "Failed to load tests".
+   */
+  describe('paper_pattern column probe', () => {
+    const listQuery = () =>
+      supabaseMock.queueResult('tests', { data: [], count: 0 });
+
+    /** The select list of the main list query (the probe is the call before it). */
+    const listColumns = () => {
+      const selects = supabaseMock.calls.filter((c) => c.table === 'tests' && c.op === 'select');
+      return selects[selects.length - 1]?.columns ?? '';
+    };
+
+    it('omits the column when the migration has not been run', async () => {
+      supabaseMock.queueResult('tests', {
+        data: null,
+        error: { code: '42703', message: 'column tests.paper_pattern does not exist' },
+      });
+      listQuery();
+
+      await service.findAll(TEACHER, {});
+
+      expect(listColumns()).not.toContain('paper_pattern');
+    });
+
+    it('includes the column once the migration has been run', async () => {
+      supabaseMock.queueResult('tests', { data: [] }); // probe succeeds
+      listQuery();
+
+      await service.findAll(TEACHER, {});
+
+      expect(listColumns()).toContain('paper_pattern');
+    });
+
+    /**
+     * The original probe used `{ head: true }`. A HEAD response carries no body,
+     * so PostgREST's error payload never arrives and postgrest-js reports
+     * `{ message: '' }` with no code — which read as "no problem, the column is
+     * there", and every subsequent list query 42703'd.
+     */
+    it('falls back to omitting the column when the probe is inconclusive', async () => {
+      supabaseMock.queueResult('tests', { data: null, error: { message: '' } });
+      listQuery();
+
+      await service.findAll(TEACHER, {});
+
+      expect(listColumns()).not.toContain('paper_pattern');
+    });
+
+    it('caches a definite answer instead of re-probing on every read', async () => {
+      supabaseMock.queueResult('tests', {
+        data: null,
+        error: { code: '42703', message: 'column tests.paper_pattern does not exist' },
+      });
+      listQuery();
+      listQuery();
+
+      await service.findAll(TEACHER, {});
+      const afterFirst = supabaseMock.calls.length;
+      await service.findAll(TEACHER, {});
+
+      // Second call issues only the list query — no second probe.
+      expect(supabaseMock.calls.length - afterFirst).toBe(1);
+    });
+
+    // An outage must not latch the column off for the lifetime of the process.
+    it('re-probes after an inconclusive result', async () => {
+      supabaseMock.queueResult('tests', { data: null, error: { message: 'network down' } });
+      listQuery();
+      supabaseMock.queueResult('tests', { data: [] }); // probe succeeds this time
+      listQuery();
+
+      await service.findAll(TEACHER, {});
+      expect(listColumns()).not.toContain('paper_pattern');
+
+      await service.findAll(TEACHER, {});
+      expect(listColumns()).toContain('paper_pattern');
+    });
+  });
+
   describe('publish', () => {
     it('refuses to publish a paper with no questions on it', async () => {
       supabaseMock.queueResult('tests', { data: { id: TEST_ID, created_by: TEACHER.id } });

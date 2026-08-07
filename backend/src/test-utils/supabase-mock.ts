@@ -16,8 +16,8 @@ export interface QueuedResult {
 export class SupabaseMock {
   /** table -> queued results, consumed FIFO. */
   private results = new Map<string, QueuedResult[]>();
-  /** Every terminal operation, for assertions. */
-  public calls: { table: string; op: string; payload?: any }[] = [];
+  /** Every terminal operation, for assertions. `columns` is the select list. */
+  public calls: { table: string; op: string; payload?: any; columns?: string }[] = [];
 
   reset() {
     this.results.clear();
@@ -41,9 +41,11 @@ export class SupabaseMock {
     const self = this;
     let currentOp = 'select';
     let payload: any;
+    /** The select list, so tests can assert which columns were asked for. */
+    let columns: string | undefined;
 
     const settle = () => {
-      self.calls.push({ table, op: currentOp, payload });
+      self.calls.push({ table, op: currentOp, payload, columns });
       const result = self.nextResult(table);
       return Promise.resolve({
         data: result.data ?? null,
@@ -54,7 +56,8 @@ export class SupabaseMock {
 
     // Chainable no-ops that record intent and return the same builder.
     const builder: any = {
-      select: (_cols?: any, opts?: any) => {
+      select: (cols?: any, opts?: any) => {
+        if (typeof cols === 'string') columns = cols;
         if (opts?.head) currentOp = 'count';
         return builder;
       },

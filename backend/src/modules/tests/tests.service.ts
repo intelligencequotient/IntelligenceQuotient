@@ -74,13 +74,20 @@ export class TestsService {
   // ── Authorisation ───────────────────────────────────────────────────────────
 
   /**
-   * Confirms the caller may administer this test, and 404s when it does not exist.
+   * Two levels of access to a test, because two different jobs happen on one.
    *
-   * The previous guard was `if (test && test.created_by !== user.id) throw` —
-   * which silently allowed the operation when the lookup returned nothing, and
-   * was skipped entirely whenever `user` was undefined.
+   *  - *Administering* a paper — renaming it, changing its duration or marking
+   *    scheme, publishing it, scheduling it, deleting it. Owner-level.
+   *  - *Contributing* to a paper — adding the questions for your subject to a
+   *    shell an admin created and assigned you. That is the whole point of
+   *    `test_teachers`, and it must not also grant the power to republish or
+   *    reschedule somebody else's exam.
+   *
+   * Both 404 when the test does not exist. The previous single check was
+   * `if (test && test.created_by !== user.id) throw`, which silently allowed the
+   * operation when the lookup returned nothing.
    */
-  private async assertCanManage(testId: string, user: Requester): Promise<any> {
+  private async loadForAccess(testId: string): Promise<any> {
     const { data: test } = await supabase
       .from('tests')
       .select('id, created_by, status')
@@ -88,10 +95,24 @@ export class TestsService {
       .single();
 
     if (!test) throw new NotFoundException('Test not found');
-    if (user.role === 'admin') return test;
-    if (test.created_by === user.id) return test;
+    return test;
+  }
 
-    // A teacher assigned to fill this paper may work on it too.
+  /** Owner-level: admin, or the person who created the test. */
+  private async assertCanAdminister(testId: string, user: Requester): Promise<any> {
+    const test = await this.loadForAccess(testId);
+    if (user.role === 'admin' || test.created_by === user.id) return test;
+
+    throw new ForbiddenException(
+      'Only an admin or the teacher who created this test can change it.',
+    );
+  }
+
+  /** Owner-level, plus any teacher assigned to fill questions on this paper. */
+  private async assertCanContribute(testId: string, user: Requester): Promise<any> {
+    const test = await this.loadForAccess(testId);
+    if (user.role === 'admin' || test.created_by === user.id) return test;
+
     const { data: collaborator } = await supabase
       .from('test_teachers')
       .select('teacher_id')
@@ -341,7 +362,7 @@ export class TestsService {
     if (user.role === 'student') {
       await this.assertStudentMaySit(id, user.id);
     } else {
-      await this.assertCanManage(id, user);
+      await this.assertCanContribute(id, user);
     }
 
     const base = await this.withPattern(
@@ -420,7 +441,7 @@ export class TestsService {
 
   /** Update test metadata */
   async update(id: string, body: UpdateTestDto, user: Requester) {
-    await this.assertCanManage(id, user);
+    await this.assertCanAdminister(id, user);
 
     const { data, error } = await supabase
       .from('tests')
@@ -434,7 +455,7 @@ export class TestsService {
 
   /** Delete a test and everything hanging off it */
   async remove(id: string, user: Requester) {
-    await this.assertCanManage(id, user);
+    await this.assertCanAdminister(id, user);
 
     // Manual cascade delete to satisfy foreign key constraints. Every id list is
     // chunked — a popular test has one attempt per student, and a thousand UUIDs
@@ -466,7 +487,7 @@ export class TestsService {
 
   /** Add questions to test (Step 2 of TestConstructor) */
   async addQuestions(testId: string, questionIds: string[], user: Requester) {
-    await this.assertCanManage(testId, user);
+    await this.assertCanContribute(testId, user);
     const ids = questionIds ?? []; // Allow empty array to clear questions
 
     const { data: existingTestQuestions } = await supabase
@@ -564,7 +585,7 @@ export class TestsService {
 
   /** Publish a test (makes it visible to students) */
   async publish(id: string, user: Requester) {
-    await this.assertCanManage(id, user);
+    await this.assertCanAdminister(id, user);
 
     // An empty paper published by accident is worse than a failed request.
     const { count } = await supabase
@@ -588,7 +609,7 @@ export class TestsService {
 
   /** Assign test to batches with a schedule */
   async assign(testId: string, body: AssignTestDto, user: Requester) {
-    await this.assertCanManage(testId, user);
+    await this.assertCanAdminister(testId, user);
     this.assertWindowSane(body.scheduled_start, body.scheduled_end);
 
     const assignments = await this.buildAssignments(
@@ -729,7 +750,7 @@ export class TestsService {
    * struggled with.
    */
   async getResults(testId: string, user: Requester) {
-    await this.assertCanManage(testId, user);
+    await this.assertCanContribute(testId, user);
 
     const { data: test } = await supabase
       .from('tests')

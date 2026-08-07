@@ -95,7 +95,17 @@ function App() {
               </ProtectedRoute>
             }>
               <Route index element={<TeacherDashboard />} />
-              <Route path="test-constructor" element={<TestConstructor />} />
+              {/* Creating a paper from scratch is admin-only. Adding questions
+                  to an existing one (the `:testId` route below) stays open to
+                  the teachers assigned to it. */}
+              <Route
+                path="test-constructor"
+                element={
+                  <ProtectedRoute allowedRoles={['admin']}>
+                    <TestConstructor />
+                  </ProtectedRoute>
+                }
+              />
               <Route path="csv-upload" element={<CSVUpload />} />
               <Route path="analytics" element={<CohortAnalytics />} />
               <Route path="crm" element={<StudentCRM />} />

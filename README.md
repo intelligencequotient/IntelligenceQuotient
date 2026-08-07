@@ -107,6 +107,7 @@ Other things worth knowing when the platform is carrying a real cohort:
 - Every write endpoint has a DTO; request bodies are never spread into a DB write, so server-owned columns (`created_by`, `status`, `review_status`, `total_marks`) are not client-writable
 - Subject-scoped teachers are scoped on writes as well as reads — editing, deleting, approving and bulk operations all enforce it
 - Batches, lectures and tests check ownership on every path, and a missing row is a 404 rather than an implicit pass
+- **Creating a test is admin-only.** Papers are initiated centrally; teachers are assigned to fill in their subject's questions and can do only that — being a collaborator does not confer the power to rename, reschedule, republish or delete somebody else's exam. Enforced on the endpoints, not just by hiding the sidebar item
 - The PDF pipeline spawns Python with an argv array, never a shell string; `examType` is matched against a fixed list
 - Uploads are size- and type-limited, and PDFs are checked by magic bytes rather than the declared MIME type
 - Changing your own password requires the current one, verified on an isolated auth client

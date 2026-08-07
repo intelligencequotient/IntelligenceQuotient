@@ -222,8 +222,14 @@ const TestConstructor = () => {
     <div className="test-constructor">
       <header className="page-header d-flex justify-between align-center">
         <div>
-          <h1>Test Constructor</h1>
-          <p>Design, build, and publish new assessments.</p>
+          {/* A teacher only ever reaches this page to fill in an assigned
+              paper; building one from scratch is an admin action. */}
+          <h1>{isInitiator ? 'Test Constructor' : 'Add Questions'}</h1>
+          <p>
+            {isInitiator
+              ? 'Design, build, and publish new assessments.'
+              : `Add the ${userSubject ? `${userSubject} ` : ''}questions for this paper.`}
+          </p>
         </div>
         <div className="header-actions">
           <button className="btn-outline" onClick={handleSaveDraft}>

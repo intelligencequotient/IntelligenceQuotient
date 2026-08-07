@@ -27,10 +27,16 @@ const MainLayout = () => {
     { name: 'Chat History', path: '/student/doubts', icon: MessageSquare },
   ];
 
+  const isAdmin = user.role === 'admin';
+
   const teacherNav = [
     { name: 'Dashboard', path: '/teacher', icon: LayoutDashboard },
     { name: 'Batch Management', path: '/teacher/batch-management', icon: UsersRound },
-    { name: 'Test Constructor', path: '/teacher/test-constructor', icon: Layers },
+    // Building a paper from scratch is an admin action; teachers fill in the
+    // questions for their subject from Test Library instead.
+    ...(isAdmin
+      ? [{ name: 'Test Constructor', path: '/teacher/test-constructor', icon: Layers }]
+      : []),
     { name: 'Test Library', path: '/teacher/test-library', icon: FileText },
     { name: 'Question Bank', path: '/teacher/question-bank', icon: Database },
     { name: 'Review Queue', path: '/teacher/review-queue', icon: ClipboardCheck },

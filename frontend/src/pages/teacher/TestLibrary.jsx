@@ -22,10 +22,14 @@ const TestLibrary = () => {
           <h1>Test Library</h1>
           <p>View and collaborate on tests across all subjects</p>
         </div>
-        <button className="btn-primary" onClick={() => navigate('/teacher/test-constructor')}>
-          <Plus size={18} />
-          <span>Create New Test</span>
-        </button>
+        {/* Only admins initiate papers; teachers add questions to the ones
+            they have been assigned. */}
+        {user.role === 'admin' && (
+          <button className="btn-primary" onClick={() => navigate('/teacher/test-constructor')}>
+            <Plus size={18} />
+            <span>Create New Test</span>
+          </button>
+        )}
       </div>
 
       <div className="library-content">
@@ -41,7 +45,11 @@ const TestLibrary = () => {
             <div className="empty-state">
               <FileText size={48} />
               <h3>No tests found</h3>
-              <p>Get started by creating your first test.</p>
+              <p>
+                {user.role === 'admin'
+                  ? 'Get started by creating your first test.'
+                  : 'Tests you are assigned to will appear here.'}
+              </p>
             </div>
           ) : (
             tests.map(test => (

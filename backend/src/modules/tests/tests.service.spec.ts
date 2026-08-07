@@ -137,30 +137,86 @@ describe('TestsService', () => {
 
     it("refuses to let one teacher edit another teacher's test", async () => {
       supabaseMock.queueResult('tests', { data: { id: TEST_ID, created_by: TEACHER.id } });
-      supabaseMock.queueResult('test_teachers', { data: null });
 
       await expect(service.update(TEST_ID, { title: 'x' }, OTHER_TEACHER)).rejects.toBeInstanceOf(
         ForbiddenException,
       );
     });
 
-    it('allows a teacher assigned to the paper as a collaborator', async () => {
-      supabaseMock.queueResult('tests', { data: { id: TEST_ID, created_by: TEACHER.id } });
-      supabaseMock.queueResult('test_teachers', { data: { teacher_id: OTHER_TEACHER.id } });
-      supabaseMock.queueResult('tests', { data: { id: TEST_ID, title: 'x' } });
-
-      await expect(service.update(TEST_ID, { title: 'x' }, OTHER_TEACHER)).resolves.toMatchObject({
-        id: TEST_ID,
-      });
-    });
-
-    it('lets an admin through without a collaborator lookup', async () => {
+    it('lets an admin through', async () => {
       supabaseMock.queueResult('tests', { data: { id: TEST_ID, created_by: TEACHER.id } });
       supabaseMock.queueResult('tests', { data: { id: TEST_ID, title: 'x' } });
 
       await expect(service.update(TEST_ID, { title: 'x' }, ADMIN)).resolves.toMatchObject({
         id: TEST_ID,
       });
+    });
+
+    it('lets the creator manage their own test', async () => {
+      supabaseMock.queueResult('tests', { data: { id: TEST_ID, created_by: TEACHER.id } });
+      supabaseMock.queueResult('tests', { data: { id: TEST_ID, title: 'x' } });
+
+      await expect(service.update(TEST_ID, { title: 'x' }, TEACHER)).resolves.toMatchObject({
+        id: TEST_ID,
+      });
+    });
+  });
+
+  /**
+   * Papers are initiated by an admin, who then assigns teachers to fill in the
+   * questions for their subject. Being assigned has to let you do that job and
+   * nothing more — it must not also confer the power to rename, reschedule,
+   * republish or delete somebody else's exam.
+   */
+  describe('assigned teachers can contribute but not administer', () => {
+    /** The ownership lookup, then the `test_teachers` membership lookup. */
+    const assignedCollaborator = () => {
+      supabaseMock.queueResult('tests', { data: { id: TEST_ID, created_by: ADMIN.id } });
+      supabaseMock.queueResult('test_teachers', { data: { teacher_id: OTHER_TEACHER.id } });
+    };
+
+    /** Ownership lookup only — administer-level never consults test_teachers. */
+    const adminOwnedTest = () =>
+      supabaseMock.queueResult('tests', { data: { id: TEST_ID, created_by: ADMIN.id } });
+
+    it('lets an assigned teacher add questions', async () => {
+      assignedCollaborator();
+      supabaseMock.queueResult('test_questions', { data: [] }); // existing links
+      supabaseMock.queueResult('questions', {
+        data: [{ id: 'q1', subject: 'Physics', review_status: 'approved', is_active: true }],
+      });
+      supabaseMock.queueResult('test_questions', { data: null }); // delete
+      supabaseMock.queueResult('test_questions', { data: null }); // insert
+      supabaseMock.queueResult('test_questions', { data: [] }); // recalc marks
+      supabaseMock.queueResult('tests', { data: null }); // total_marks write
+
+      await expect(
+        service.addQuestions(TEST_ID, ['q1'], { ...OTHER_TEACHER, subject: 'Physics' }),
+      ).resolves.toMatchObject({ message: 'Questions updated' });
+    });
+
+    it('lets an assigned teacher read the paper', async () => {
+      assignedCollaborator();
+      supabaseMock.queueResult('tests', { data: [] }); // paper_pattern probe
+      supabaseMock.queueResult('tests', { data: { id: TEST_ID } });
+
+      await expect(service.findOne(TEST_ID, OTHER_TEACHER)).resolves.toMatchObject({
+        id: TEST_ID,
+      });
+    });
+
+    it.each([
+      ['rename it', (s: TestsService) => s.update(TEST_ID, { title: 'hijacked' }, OTHER_TEACHER)],
+      ['publish it', (s: TestsService) => s.publish(TEST_ID, OTHER_TEACHER)],
+      ['delete it', (s: TestsService) => s.remove(TEST_ID, OTHER_TEACHER)],
+      [
+        'reschedule it',
+        (s: TestsService) => s.assign(TEST_ID, { batch_ids: [] } as any, OTHER_TEACHER),
+      ],
+    ])('does not let an assigned teacher %s', async (_name, call) => {
+      adminOwnedTest();
+
+      await expect(call(service)).rejects.toBeInstanceOf(ForbiddenException);
     });
   });
 

@@ -35,8 +35,17 @@ export class TestsController {
 
   // ─── Teacher Routes ────────────────────────────────────────────────────────
 
-  @ApiOperation({ summary: '[Teacher] Create a full test (Metadata + Questions + Assignment)' })
-  @UseGuards(RolesGuard) @Roles('teacher', 'admin')
+  /**
+   * Creating a test is an admin action.
+   *
+   * Papers are initiated centrally and teachers are then assigned to fill in
+   * the questions for their subject — see POST /:id/questions, which stays open
+   * to an assigned teacher. Without this restriction the Test Constructor page
+   * being hidden from the teacher sidebar would be decoration: the endpoint was
+   * still there for anyone who kept the URL or called the API directly.
+   */
+  @ApiOperation({ summary: '[Admin] Create a full test (Metadata + Questions + Assignment)' })
+  @UseGuards(RolesGuard) @Roles('admin')
   @Post('constructor')
   saveFullTest(@Body() body: SaveFullTestDto, @CurrentUser() user) {
     return this.testsService.saveFullTest(body, user);
@@ -49,8 +58,8 @@ export class TestsController {
     return this.testsService.findAll(user, query);
   }
 
-  @ApiOperation({ summary: '[Teacher] Create new test' })
-  @UseGuards(RolesGuard) @Roles('teacher', 'admin')
+  @ApiOperation({ summary: '[Admin] Create a new test shell' })
+  @UseGuards(RolesGuard) @Roles('admin')
   @Post()
   create(@Body() body: CreateTestDto, @CurrentUser() user) {
     return this.testsService.create(body, user);
@@ -75,7 +84,8 @@ export class TestsController {
     return this.testsService.publish(id, user);
   }
 
-  @ApiOperation({ summary: '[Teacher] Add/replace questions on a test' })
+  /** Stays open to teachers: filling in a paper's questions is their job. */
+  @ApiOperation({ summary: '[Teacher] Add/replace questions on a test you own or are assigned' })
   @UseGuards(RolesGuard) @Roles('teacher', 'admin')
   @Post(':id/questions')
   addQuestions(

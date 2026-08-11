@@ -12,6 +12,14 @@ const CSV_TEMPLATE =
   'question,optA,optB,optC,optD,correct,difficulty,subject,topic,marks\n' +
   '"What is Newton\'s Third Law?","Action=Reaction","F=ma","Inertia","Gravity",A,easy,Physics,Laws of Motion,4\n';
 
+/** Column values the extractor files questions under, in reading order. */
+const Q_TYPE_LABELS = {
+  single_correct: 'Single correct',
+  multi_correct: 'Multiple correct',
+  numerical: 'Numerical',
+  assertion: 'Assertion / Reason',
+};
+
 /**
  * Bulk upload for CSV and PDF.
  *
@@ -302,11 +310,22 @@ const CSVUpload = () => {
           <div className="preview-container upload-success">
             <h2>Success</h2>
             {results.kind === 'pdf' ? (
-              <p>
-                Extraction is complete. Because the AI infers the text, topic and answer key,
-                these {results.inserted} question(s) are waiting in the <strong>Review Queue</strong>{' '}
-                and will not appear in tests until you approve them.
-              </p>
+              <>
+                <p>
+                  Extraction is complete. Because the AI infers the text, topic, question type and
+                  answer key, these {results.inserted} question(s) are waiting in the{' '}
+                  <strong>Review Queue</strong> and will not appear in tests until you approve them.
+                </p>
+                {results.byType && Object.keys(results.byType).length > 0 && (
+                  <ul className="upload-type-breakdown">
+                    {Object.entries(results.byType).map(([type, count]) => (
+                      <li key={type}>
+                        <strong>{count}</strong> {Q_TYPE_LABELS[type] || type}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </>
             ) : (
               <p>{results.inserted} question(s) were added to your Question Bank.</p>
             )}

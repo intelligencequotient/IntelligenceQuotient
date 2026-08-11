@@ -12,6 +12,7 @@ import * as path from 'path';
 import { randomUUID } from 'crypto';
 import { supabase } from '../../config/supabase.config';
 import { insertInBatches } from '../../common/db/query.util';
+import { QUESTION_TYPES } from './dto/question.dto';
 import { UploadsGateway, UploadStage } from './uploads.gateway';
 
 const execFileAsync = promisify(execFile);
@@ -36,6 +37,18 @@ const MAX_QUESTIONS_PER_RUN = 500;
 
 /** Temp run directories older than this are orphans from a crashed process. */
 const STALE_TEMP_AGE_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * The classifier files every question as Subject/Topic/QuestionType, and that
+ * last level is the one the exam UI renders from: `numerical` gets a keypad,
+ * `multi_correct` gets checkboxes, `single_correct` gets radio buttons. It used
+ * to be hardcoded to `single_correct`, so every numerical question extracted
+ * from a paper reached students as a four-option MCQ with placeholder options.
+ */
+const DEFAULT_QUESTION_TYPE = 'single_correct';
+
+/** Placeholder options for the MCQ shapes; a reviewer replaces them. */
+const PLACEHOLDER_OPTIONS = ['A', 'B', 'C', 'D'];
 
 @Injectable()
 export class PdfProcessorService implements OnModuleInit {
@@ -150,6 +163,7 @@ export class PdfProcessorService implements OnModuleInit {
 
       // 5. Upload images to Supabase Storage & prepare DB inserts
       const dbRows: any[] = [];
+      const typeCounts: Record<string, number> = {};
       const bucket = 'question-images';
       const uploadable = manifest.filter((m: any) => m.classified_path).length || 1;
       let uploadedSoFar = 0;
@@ -198,23 +212,25 @@ export class PdfProcessorService implements OnModuleInit {
 
         const { data: publicUrlData } = supabase.storage.from(bucket).getPublicUrl(storagePath);
 
-        // Prepare row for `questions` table.
-        // Defaults to marks=4, difficulty=medium, q_type=single_correct.
+        // Prepare row for `questions` table. Defaults to marks=4, medium.
+        const qType = this.resolveQuestionType(item.question_type);
+        typeCounts[qType] = (typeCounts[qType] || 0) + 1;
+
         dbRows.push({
           subject: item.subject,
           topic: item.topic,
           subtopic: null,
           difficulty: item.difficulty || 'medium',
-          q_type: 'single_correct',
+          q_type: qType,
           question_text: item.extracted_text || 'See attached image.',
           image_url: publicUrlData.publicUrl,
-          options: ['A', 'B', 'C', 'D'], // Placeholder for image questions
-          correct_answer: item.raw_answer ? { value: item.raw_answer } : { index: 0 },
+          options: qType === 'numerical' ? [] : PLACEHOLDER_OPTIONS,
+          correct_answer: this.buildCorrectAnswer(qType, item),
           marks: 4,
           is_active: true,
           created_by: teacherId,
-          // Extraction infers text, topic and answers — a human confirms before
-          // these can be pulled into a live test.
+          // Extraction infers text, topic, type and answers — a human confirms
+          // before these can be pulled into a live test.
           source: 'pdf',
           review_status: 'pending',
         });
@@ -227,12 +243,22 @@ export class PdfProcessorService implements OnModuleInit {
         supabase.from('questions').insert(batch),
       );
 
-      this.logger.log(`Run ${runId} complete. Inserted ${insertedCount} questions.`);
+      this.logger.log(
+        `Run ${runId} complete. Inserted ${insertedCount} questions. ` +
+          `Types: ${JSON.stringify(typeCounts)}`,
+      );
       report('complete', `Done — ${insertedCount} question(s) added to the review queue.`, 100, {
         processed: manifest.length,
         inserted: insertedCount,
+        byType: typeCounts,
       });
-      return { success: true, processed: manifest.length, inserted: insertedCount, runId };
+      return {
+        success: true,
+        processed: manifest.length,
+        inserted: insertedCount,
+        byType: typeCounts,
+        runId,
+      };
     } catch (error: any) {
       this.logger.error(`PDF Processing failed: ${error?.message}`);
       report('failed', 'Processing failed.', -1, { error: error?.message });
@@ -265,6 +291,40 @@ export class PdfProcessorService implements OnModuleInit {
   /** `%PDF-` magic bytes. Filenames and declared MIME types are not evidence. */
   private looksLikePdf(buffer: Buffer): boolean {
     return buffer.length > 5 && buffer.subarray(0, 5).toString('latin1') === '%PDF-';
+  }
+
+  /**
+   * Maps the classifier's `question_type` onto a value the question bank
+   * accepts. The manifest is written by our own script, but it is still a file
+   * a run produced: an unrecognised value would fail the whole insert batch, so
+   * anything unexpected falls back to the commonest shape for a reviewer to fix.
+   */
+  private resolveQuestionType(value: unknown): string {
+    const normalised = typeof value === 'string' ? value.trim().toLowerCase() : '';
+    if ((QUESTION_TYPES as readonly string[]).includes(normalised)) return normalised;
+    if (normalised) {
+      this.logger.warn(
+        `Unrecognised question_type "${normalised}"; storing as ${DEFAULT_QUESTION_TYPE}.`,
+      );
+    }
+    return DEFAULT_QUESTION_TYPE;
+  }
+
+  /**
+   * Builds the `correct_answer` in the shape the grader matches on for this
+   * type — `{ indices }` for multi-select, `{ value }` for numerical, `{ index }`
+   * otherwise. classify.py already parsed the paper's answer key where it
+   * printed one; where it did not, the placeholder is a marker for the reviewer,
+   * and `review_status: 'pending'` keeps the question out of live tests until
+   * they have set it.
+   */
+  private buildCorrectAnswer(qType: string, item: any): Record<string, any> {
+    const indices: number[] = Array.isArray(item?.answer_indices) ? item.answer_indices : [];
+    const value = item?.answer_value ?? null;
+
+    if (qType === 'multi_correct') return { indices };
+    if (qType === 'numerical') return { value: value ?? item?.raw_answer ?? null };
+    return { index: indices.length ? indices[0] : 0 };
   }
 
   /**

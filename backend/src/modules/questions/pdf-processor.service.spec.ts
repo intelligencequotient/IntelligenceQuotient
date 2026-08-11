@@ -108,7 +108,59 @@ describe('PdfProcessorService', () => {
     });
 
     it('accepts a path that stays inside', () => {
-      expect(resolveInside('/runs/abc', 'classified/Physics/q1.png')).toBeTruthy();
+      expect(resolveInside('/runs/abc', 'classified/Physics/Optics/numerical/q1.png')).toBeTruthy();
+    });
+  });
+
+  /**
+   * Every extracted question used to be stored as `single_correct`, so a
+   * numerical question reached students as a four-option MCQ they could not
+   * answer. The type now comes from the classifier — but the manifest is a file
+   * on disk, so a value the question bank does not know must not reach the
+   * insert and fail the whole batch.
+   */
+  describe('resolveQuestionType', () => {
+    const resolve = (value: unknown) => (service as any).resolveQuestionType(value);
+
+    it.each(['single_correct', 'multi_correct', 'numerical', 'assertion'])(
+      'keeps the supported type %p',
+      (type) => {
+        expect(resolve(type)).toBe(type);
+      },
+    );
+
+    it('normalises casing and surrounding space', () => {
+      expect(resolve('  Numerical ')).toBe('numerical');
+    });
+
+    it.each([undefined, null, '', 'matrix_match', 42, {}])(
+      'falls back to single_correct for %p',
+      (value) => {
+        expect(resolve(value)).toBe('single_correct');
+      },
+    );
+  });
+
+  describe('buildCorrectAnswer', () => {
+    const build = (qType: string, item: any) => (service as any).buildCorrectAnswer(qType, item);
+
+    it('gives a multi-correct question the indices shape the grader matches on', () => {
+      expect(build('multi_correct', { answer_indices: [0, 2] })).toEqual({ indices: [0, 2] });
+    });
+
+    it('gives a numerical question the printed value', () => {
+      expect(build('numerical', { answer_value: '2.50' })).toEqual({ value: '2.50' });
+    });
+
+    it('gives a single-correct question the first answered index', () => {
+      expect(build('single_correct', { answer_indices: [1] })).toEqual({ index: 1 });
+    });
+
+    /** No printed answer key: the reviewer supplies it before approval. */
+    it('falls back to a placeholder when the paper printed no answer', () => {
+      expect(build('single_correct', {})).toEqual({ index: 0 });
+      expect(build('multi_correct', {})).toEqual({ indices: [] });
+      expect(build('numerical', {})).toEqual({ value: null });
     });
   });
 });

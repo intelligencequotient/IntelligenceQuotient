@@ -14,7 +14,10 @@
  * the question type rather than invented.
  */
 
-const MCQ_TYPES = ['mcq', 'single_correct', 'single', 'scq'];
+// `assertion` is an MCQ in every way that matters here — four statements about
+// an Assertion/Reason pair, one of which is right. The PDF pipeline emits it,
+// so name it rather than leaving it to the options-based guess below.
+const MCQ_TYPES = ['mcq', 'single_correct', 'single', 'scq', 'assertion'];
 const MSQ_TYPES = ['msq', 'multi_correct', 'multiple_correct', 'multi', 'multiple'];
 const NAT_TYPES = ['nat', 'integer', 'numerical', 'numeric', 'int'];
 

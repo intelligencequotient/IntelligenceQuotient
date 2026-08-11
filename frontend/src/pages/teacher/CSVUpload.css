@@ -269,3 +269,22 @@
 
 .upload-success { padding: 28px; text-align: center; }
 .upload-success h2 { margin-bottom: 10px; }
+
+/* How the extracted questions split across question types. */
+.upload-type-breakdown {
+  list-style: none;
+  margin: 16px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+}
+.upload-type-breakdown li {
+  padding: 6px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.upload-type-breakdown strong { color: var(--text-primary); }

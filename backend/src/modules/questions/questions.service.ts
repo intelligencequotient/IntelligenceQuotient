@@ -215,7 +215,7 @@ export class QuestionsService {
 
     const { data, error } = await supabase
       .from('questions')
-      .update({ ...patch, updated_at: new Date().toISOString() })
+      .update(patch)
       .eq('id', id)
       .select()
       .single();

@@ -12,6 +12,38 @@ const SUBJECTS = ['Mathematics', 'Physics', 'Chemistry', 'Biology'];
 const DIFFICULTIES = ['easy', 'medium', 'hard'];
 const PAGE_SIZE = 20;
 
+const CHAPTERS = {
+  Chemistry: [
+    'Atomic Structure', 'Chemical Bonding', 'Chemical Equilibrium', 'Chemical Kinetics',
+    'Colligative Properties of Solutions', 'Coordination Compounds', 'd-Block Elements',
+    'Electrochemistry', 'Gaseous State', 'Hydrogen and s-Block Elements',
+    'IOC and Hydrocarbons', 'Ionic Equilibrium', 'Metallurgy',
+    'Nitrogen Containing Organic Compounds', 'Organic Halides and Organic Concepts',
+    'Oxygen Containing Organic Compound-I', 'Oxygen Containing Organic Compound-II',
+    'Oxygen Containing Organic Compounds-III', 'p-Block Element-II', 'p-Block Elements-I',
+    'Qualitative Analysis', 'Solid State', 'Stoichiometry-I and II',
+    'Surf., Bio., Practical Org. Chem. and Polymers', 'Thermodynamics and Thermochemistry',
+  ],
+  Physics: [
+    'DC Circuits and Capacitors', 'Dynamics of a Particle', 'Each of the following Question has',
+    'Electrostatics', 'EMI and AC Circuits', 'Energy and Momentum',
+    'Gaseous State and Thermodynamics', 'Kinematics of a particle', 'Liquids',
+    'Magnetic Effects of Current', 'Modern Physics', 'Paragraph for Q',
+    'Properties of Matter', 'Ray Optics and Wave Optics', 'Rotation and Gravitation',
+    'SHM', 'Thermodynamics', 'Wave Motion',
+  ],
+  Mathematics: [
+    '84. MATCH THE FOLLOWING', 'Binomial Theorem', 'Circle', 'Complex Numbers',
+    'Conic Sections', 'Differential Calculus-1', 'Differential Calculus-2',
+    'Differential Equations', 'Each of the following Question has', 'For Questions',
+    'Functions', 'Integral Calculus-1', 'Integral Calculus-2', 'M atrices and Determinants',
+    'Permutation and Combination', 'Probability', 'Quadratic Equations',
+    'Sequence and Series', 'Sets Relations Functions', 'Straight Line',
+    'Three Dimensional Geometry', 'Trigonometry', 'Vectors',
+  ],
+  Biology: [],
+};
+
 const emptyQuestion = () => ({
   subject: 'Mathematics',
   topic: '',
@@ -34,6 +66,11 @@ const emptyQuestion = () => ({
 const QuestionBank = () => {
   const { setQuestions: setGlobalQuestions } = useAppData();
 
+  // Read the logged-in user once; teachers are locked to their subject
+  const currentUser = JSON.parse(localStorage.getItem('user') || '{}');
+  const isTeacher = currentUser.role === 'teacher';
+  const teacherSubject = isTeacher ? (currentUser.subject || '') : '';
+
   const [rows, setRows] = useState([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -41,8 +78,12 @@ const QuestionBank = () => {
 
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
-  const [subjectFilter, setSubjectFilter] = useState('');
-  const [difficultyFilter, setDifficultyFilter] = useState('');
+  // Teachers are auto-locked to their own subject; admins/all can pick freely
+  const [subjectFilter, setSubjectFilter] = useState(teacherSubject);
+  const [chapterFilter, setChapterFilter] = useState('');
+  const [topicInput, setTopicInput] = useState('');
+  const [topicFilter, setTopicFilter] = useState('');
+  const [qTypeFilter, setQTypeFilter] = useState('');
 
   const [selected, setSelected] = useState([]);
   const [toast, setToast] = useState('');
@@ -64,18 +105,24 @@ const QuestionBank = () => {
     clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
       setSearch(searchInput);
+      setTopicFilter(topicInput);
       setPage(1);
     }, 350);
     return () => clearTimeout(debounceRef.current);
-  }, [searchInput]);
+  }, [searchInput, topicInput]);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const params = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE) });
+      // Teachers see all questions in their subject (pending + approved).
+      // The backend SBAC already restricts the response to their subject server-side.
+      const params = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE), review_status: 'all' });
       if (search) params.set('search', search);
       if (subjectFilter) params.set('subject', subjectFilter);
-      if (difficultyFilter) params.set('difficulty', difficultyFilter);
+      // chapter dropdown takes priority over free-text topic filter
+      const effectiveTopic = chapterFilter || topicFilter;
+      if (effectiveTopic) params.set('topic', effectiveTopic);
+      if (qTypeFilter) params.set('q_type', qTypeFilter);
 
       const res = await apiClient.get(`/questions?${params}`);
       setRows(res.data || []);
@@ -87,7 +134,7 @@ const QuestionBank = () => {
     } finally {
       setLoading(false);
     }
-  }, [page, search, subjectFilter, difficultyFilter]);
+  }, [page, search, subjectFilter, chapterFilter, topicFilter, qTypeFilter]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -103,12 +150,16 @@ const QuestionBank = () => {
 
   const openEdit = (q) => {
     setEditingId(q.id);
+    // Normalise legacy 'integer' type — backend only accepts the 4 canonical types
+    const rawType = q.q_type || 'single_correct';
+    const safeType = rawType === 'integer' ? 'numerical' : rawType;
     setDraft({
       subject: q.subject || 'Mathematics',
       topic: q.topic || '',
-      q_type: q.q_type || 'single_correct',
+      q_type: safeType,
       difficulty: (q.difficulty || 'medium').toLowerCase(),
       question_text: q.question_text || '',
+      image_url: q.image_url || '',
       options: Array.isArray(q.options) && q.options.length === 4 ? [...q.options] : ['', '', '', ''],
       correctIndex: q.correct_answer?.index ?? 0,
       marks: q.marks ?? 4,
@@ -117,19 +168,27 @@ const QuestionBank = () => {
     setModalOpen(true);
   };
 
-  const handleSave = async () => {
-    if (!draft.question_text.trim()) return showToast('Please enter the question text.');
+  const [modalError, setModalError] = useState('');
 
+  const handleSave = async () => {
+    setModalError('');
+    // For image-based questions question_text may legitimately be blank
     const payload = {
       subject: draft.subject,
       topic: draft.topic.trim() || null,
       q_type: draft.q_type,
       difficulty: draft.difficulty,
-      question_text: draft.question_text.trim(),
-      options: draft.options,
-      correct_answer: { index: Number(draft.correctIndex) },
       marks: Number(draft.marks) || 4,
     };
+    // Only include question_text when the teacher typed something
+    if (draft.question_text.trim()) payload.question_text = draft.question_text.trim();
+    // Only include options + correct_answer for MCQ types
+    if (draft.q_type === 'single_correct' || draft.q_type === 'multi_correct') {
+      payload.options = draft.options;
+      payload.correct_answer = { index: Number(draft.correctIndex) };
+    } else if (draft.q_type === 'numerical') {
+      // Numerical value answer — keep existing correct_answer, don't overwrite
+    }
 
     setBusy(true);
     try {
@@ -137,13 +196,17 @@ const QuestionBank = () => {
         await apiClient.patch(`/questions/${editingId}`, payload);
         showToast('Question updated.');
       } else {
+        if (!draft.question_text.trim()) { setModalError('Please enter the question text.'); setBusy(false); return; }
         await apiClient.post('/questions', payload);
         showToast('Question added.');
       }
       setModalOpen(false);
+      setModalError('');
       load();
     } catch (e) {
-      showToast(e.message || 'Save failed');
+      const msg = e.message || 'Save failed — please try again.';
+      setModalError(msg);
+      showToast(msg);
     } finally {
       setBusy(false);
     }
@@ -210,8 +273,8 @@ const QuestionBank = () => {
     <div className="question-bank">
       <header className="page-header d-flex justify-between align-center">
         <div>
-          <h1>Question Bank</h1>
-          <p>Manage and organize your assessment items.</p>
+          <h1>Question Bank{teacherSubject ? ` — ${teacherSubject}` : ''}</h1>
+          <p>{isTeacher && teacherSubject ? `Showing your ${teacherSubject} questions only.` : 'Manage and organize your assessment items.'}</p>
         </div>
         <button className="btn-primary" onClick={openCreate}>
           <Plus size={18} /> Add New Question
@@ -231,23 +294,46 @@ const QuestionBank = () => {
           />
         </div>
         <div className="filters">
+          {/* Subject: locked for teachers, selectable for admins */}
+          {isTeacher ? (
+            <div className="filter-select" style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'rgba(99,102,241,0.08)', color: '#6366f1', fontWeight: 600, border: '1.5px solid #6366f1', cursor: 'default' }}>
+              <span style={{ fontSize: 11, opacity: 0.7 }}>🔒</span> {teacherSubject || 'No subject assigned'}
+            </div>
+          ) : (
+            <select
+              className="filter-select"
+              value={subjectFilter}
+              onChange={(e) => { setSubjectFilter(e.target.value); setChapterFilter(''); setPage(1); }}
+            >
+              <option value="">All Subjects</option>
+              {SUBJECTS.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          )}
+
+          {/* Chapter dropdown — dynamic per subject */}
+          {subjectFilter && (CHAPTERS[subjectFilter] || []).length > 0 && (
+            <select
+              className="filter-select"
+              value={chapterFilter}
+              onChange={(e) => { setChapterFilter(e.target.value); setPage(1); }}
+              style={{ minWidth: 180 }}
+            >
+              <option value="">All Chapters</option>
+              {(CHAPTERS[subjectFilter] || []).map(ch => (
+                <option key={ch} value={ch}>{ch}</option>
+              ))}
+            </select>
+          )}
+
           <select
             className="filter-select"
-            value={subjectFilter}
-            onChange={(e) => { setSubjectFilter(e.target.value); setPage(1); }}
+            value={qTypeFilter}
+            onChange={(e) => { setQTypeFilter(e.target.value); setPage(1); }}
           >
-            <option value="">All Subjects</option>
-            {SUBJECTS.map((s) => <option key={s} value={s}>{s}</option>)}
-          </select>
-          <select
-            className="filter-select"
-            value={difficultyFilter}
-            onChange={(e) => { setDifficultyFilter(e.target.value); setPage(1); }}
-          >
-            <option value="">All Difficulties</option>
-            {DIFFICULTIES.map((d) => (
-              <option key={d} value={d}>{d[0].toUpperCase() + d.slice(1)}</option>
-            ))}
+            <option value="">All Types</option>
+            <option value="single_correct">Single MCQ</option>
+            <option value="multi_correct">Multi MCQ</option>
+            <option value="numerical">Numerical</option>
           </select>
         </div>
       </div>
@@ -404,6 +490,14 @@ const QuestionBank = () => {
                   />
                 </div>
                 <div className="form-group flex-1">
+                  <label>Type</label>
+                  <select value={draft.q_type} onChange={(e) => setDraft({ ...draft, q_type: e.target.value })}>
+                    <option value="single_correct">Single MCQ</option>
+                    <option value="multi_correct">Multi MCQ</option>
+                    <option value="numerical">Numerical</option>
+                  </select>
+                </div>
+                <div className="form-group flex-1">
                   <label>Difficulty</label>
                   <select value={draft.difficulty} onChange={(e) => setDraft({ ...draft, difficulty: e.target.value })}>
                     {DIFFICULTIES.map((d) => (
@@ -423,24 +517,32 @@ const QuestionBank = () => {
 
               <div className="form-group">
                 <label>Question Content</label>
-                <div className="rich-editor">
-                  <div className="editor-toolbar">
-                    <span className="qb-latex-hint">
-                      <ImageIcon size={14} /> LaTeX supported — wrap maths in $…$ or $$…$$
-                    </span>
+                {draft.image_url ? (
+                  <div style={{ background: '#f8fafc', padding: 12, borderRadius: 8, border: '1px solid var(--border-color)', textAlign: 'center' }}>
+                    <img src={draft.image_url} alt="Question" style={{ maxWidth: '100%', maxHeight: 300, objectFit: 'contain', borderRadius: 4 }} />
                   </div>
-                  <textarea
-                    className="editor-textarea"
-                    placeholder="Type your question here. e.g. Find $\int_0^1 x^2\,dx$"
-                    value={draft.question_text}
-                    onChange={(e) => setDraft({ ...draft, question_text: e.target.value })}
-                  />
-                </div>
-                {draft.question_text && (
-                  <div className="qb-preview">
-                    <span className="qb-preview-label">Preview</span>
-                    <MathText text={draft.question_text} />
-                  </div>
+                ) : (
+                  <>
+                    <div className="rich-editor">
+                      <div className="editor-toolbar">
+                        <span className="qb-latex-hint">
+                          <ImageIcon size={14} /> LaTeX supported — wrap maths in $…$ or $$…$$
+                        </span>
+                      </div>
+                      <textarea
+                        className="editor-textarea"
+                        placeholder="Type your question here. e.g. Find $\int_0^1 x^2\,dx$"
+                        value={draft.question_text}
+                        onChange={(e) => setDraft({ ...draft, question_text: e.target.value })}
+                      />
+                    </div>
+                    {draft.question_text && (
+                      <div className="qb-preview">
+                        <span className="qb-preview-label">Preview</span>
+                        <MathText text={draft.question_text} />
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
 
@@ -473,7 +575,10 @@ const QuestionBank = () => {
             </div>
 
             <div className="modal-footer">
-              <button className="btn-outline" onClick={() => setModalOpen(false)}>Cancel</button>
+              {modalError && (
+                <div style={{ color: '#dc2626', fontSize: 13, fontWeight: 500, flex: 1, textAlign: 'left' }}>⚠ {modalError}</div>
+              )}
+              <button className="btn-outline" onClick={() => { setModalOpen(false); setModalError(''); }}>Cancel</button>
               <button className="btn-primary" onClick={handleSave} disabled={busy}>
                 {busy ? 'Saving…' : editingId ? 'Save Changes' : 'Save Question'}
               </button>

@@ -5,7 +5,7 @@ import { useAppData } from '../../context/AppDataContext';
 import { apiClient } from '../../api/client';
 import './TestConstructor.css';
 
-const MCQ_TYPES = ['mcq', 'single_correct', 'single', 'scq', 'multi_correct', 'multiple_correct', 'multi', 'multiple'];
+const MCQ_TYPES = ['mcq', 'single_correct', 'single', 'scq', 'multi_correct', 'multiple_correct', 'multi', 'multiple', 'assertion'];
 const NAT_TYPES = ['nat', 'integer', 'numerical', 'numeric', 'int'];
 
 function getQuestionType(q) {

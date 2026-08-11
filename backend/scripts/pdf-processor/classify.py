@@ -1,9 +1,14 @@
 """
-classify.py — Subject & Topic Classifier (Groq-only, NO Gemini)
+classify.py — Subject, Topic & Question-Type Classifier (Groq-only, NO Gemini)
 
 Pipeline:
   PDF -> extract.py (PyMuPDF, no AI) -> question images + manifest.json
-       -> classify.py (Groq text AI)  -> sorted subject/topic folders
+       -> classify.py (Groq text AI)  -> Subject/Topic/QuestionType folders
+
+Questions are filed three levels deep — Subject -> Topic -> Question Type —
+because that is how the question bank is browsed and how a test's sections are
+filled: a JEE Advanced Physics section needs six *multi-correct* Rotational
+Motion questions, not six Rotational Motion questions of any shape.
 
 How it handles image questions WITHOUT a vision API:
   PyMuPDF reads the text on the question's PDF page at the stored bounding box.
@@ -27,6 +32,14 @@ import re
 import shutil
 import sys
 import time
+
+from qtypes import (
+    DEFAULT_QUESTION_TYPE,
+    QUESTION_TYPES,
+    answer_key_letters,
+    answer_key_value,
+    resolve_question_type,
+)
 
 try:
     import requests as _requests
@@ -375,14 +388,27 @@ def call_groq_vision(api_keys: list[str], prompt: str, image_path: str,
     return None
 
 
+# Spelled out for the model in both the text and the vision prompt: without it,
+# every question comes back "single_correct" because that is the common case.
+QUESTION_TYPE_GUIDANCE = (
+    "  single_correct — four options, exactly one is right\n"
+    "  multi_correct  — options where one OR MORE may be right\n"
+    "  numerical      — the answer is a number to write in, no options\n"
+    "  assertion      — an Assertion/Reason or Statement-1/Statement-2 pair\n"
+)
+
+
 def build_vision_prompt(exam_taxonomy: dict) -> str:
     taxonomy_lines = [f"  {subj}: {', '.join(topics)}"
                       for subj, topics in exam_taxonomy.items()]
     return (
         "This image is a single exam question.\n"
         "Read it and reply with ONLY a JSON object, no prose:\n"
-        '{"subject": "...", "topic": "...", "confidence": 0.0, "text": "..."}\n\n'
+        '{"subject": "...", "topic": "...", "question_type": "...", '
+        '"confidence": 0.0, "text": "..."}\n\n'
         '"text" must be your transcription of the question (max 300 chars).\n'
+        f'"question_type" must be one of: {", ".join(QUESTION_TYPES)}.\n'
+        + QUESTION_TYPE_GUIDANCE +
         "Choose subject and topic strictly from this taxonomy:\n"
         + "\n".join(taxonomy_lines)
     )
@@ -397,11 +423,13 @@ def build_classify_prompt(exam_taxonomy: dict, question_text: str) -> str:
     for subj, topics in exam_taxonomy.items():
         taxonomy_lines.append(f"  {subj}: {', '.join(topics)}")
 
-    return f"""You are classifying an exam question by subject and topic.
+    return f"""You are classifying an exam question by subject, topic and answer format.
 
 Available subjects and topics:
 {chr(10).join(taxonomy_lines)}
 
+Question types:
+{QUESTION_TYPE_GUIDANCE}
 Question text:
 {question_text[:1500]}
 
@@ -409,6 +437,7 @@ Return ONLY valid JSON (no markdown, no explanation):
 {{
   "subject": "<one of the subject names above>",
   "topic": "<one of the topics for that subject>",
+  "question_type": "<one of: {', '.join(QUESTION_TYPES)}>",
   "confidence": <0.0 to 1.0>
 }}"""
 
@@ -465,6 +494,17 @@ def classify_by_keywords(text: str, exam_taxonomy: dict) -> dict:
 # Closest match helper
 # ─────────────────────────────────────────────────────────────────────────────
 
+def console_safe(text) -> str:
+    """
+    Printable on a cp1252 Windows console.
+
+    Chapter names and question text out of these books contain symbols the
+    default console encoding cannot represent, and an unencodable progress line
+    raises UnicodeEncodeError — killing a run that had otherwise succeeded.
+    """
+    return str(text if text is not None else "").encode("ascii", "replace").decode()
+
+
 def closest_key(query: str, keys: list[str]) -> str | None:
     q = query.lower()
     for k in keys:
@@ -474,20 +514,145 @@ def closest_key(query: str, keys: list[str]) -> str | None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Chapter name from the book's running line
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Assignment books print a running line on every page naming the chapter:
+#     "APP | Physics 101 Electrostatics"
+#     "APP | Differential Calculus-1 100 M athematics"
+# That is the topic, stated by the book itself. It beats anything a model can
+# infer from one question's wording, and it costs no API call — which is what
+# makes a 1400-page batch feasible on a rate-limited free tier.
+
+# Publisher boilerplate that prefixes the running line.
+_RUNNING_PREFIX_RE = re.compile(r"^\s*APP\s*[|:\-–—]*\s*", re.IGNORECASE)
+# The page number splits the line into {subject, chapter}, in either order.
+_PAGE_NUMBER_SPLIT_RE = re.compile(r"\s+\d{1,4}\s+")
+
+MIN_CHAPTER_CHARS = 3
+MAX_CHAPTER_CHARS = 80
+
+# Scanned copies of these books carry a redistributor's watermark on every page,
+# which repeats exactly like a chapter line does. A chapter name is prose: it has
+# no handle, no URL, and more letters than punctuation.
+_CHAPTER_REJECT_RE = re.compile(
+    # Watermarks and handles.
+    r"@|https?://|www\.|~|\bTG\b"
+    # Section instructions, which repeat above every section and so look just as
+    # much like a running line as the chapter footer does. "NUM ERICAL" allows
+    # for the stray spaces this typesetting puts inside words.
+    r"|\btypes?\b|\bcorrect\b|\bchoices?\b|\bmarks\b|\bsection\b|\bnum\s*erical\b",
+    re.IGNORECASE,
+)
+
+
+def _squash(text: str) -> str:
+    """Lowercase with all whitespace removed — 'M athematics' == 'Mathematics'."""
+    return re.sub(r"\s+", "", text or "").lower()
+
+
+def chapter_from_running_line(header: str | None, subject: str | None,
+                              known_subjects: list[str] | None = None) -> str | None:
+    """Pull the chapter name out of a running header/footer, or None."""
+    if not header:
+        return None
+
+    text = _RUNNING_PREFIX_RE.sub("", header).strip()
+    parts = [p.strip(" |:-–—\t") for p in _PAGE_NUMBER_SPLIT_RE.split(text)]
+
+    # Everything that is not the subject and not a bare number is a candidate.
+    skip = {_squash(s) for s in ([subject] if subject else []) + (known_subjects or []) if s}
+    candidates = [
+        p for p in parts
+        if p and _squash(p) not in skip and not p.strip().isdigit()
+    ]
+    if not candidates:
+        return None
+
+    for candidate in sorted(candidates, key=len, reverse=True):
+        chapter = re.sub(r"\s+", " ", candidate).strip(" |:-–—.")
+        if not (MIN_CHAPTER_CHARS <= len(chapter) <= MAX_CHAPTER_CHARS):
+            continue
+        if _CHAPTER_REJECT_RE.search(chapter):
+            continue
+        if sum(c.isalpha() for c in chapter) < MIN_CHAPTER_CHARS:
+            continue
+        return chapter
+    return None
+
+
+def chapter_for_page(headers, subject: str | None,
+                     known_subjects: list[str] | None = None) -> str | None:
+    """First of a page's running lines that reads as a chapter name."""
+    if isinstance(headers, str):
+        headers = [headers]
+    for header in headers or []:
+        chapter = chapter_from_running_line(header, subject, known_subjects)
+        if chapter:
+            return chapter
+    return None
+
+
+def chapters_by_page(manifest: list[dict], subject: str | None,
+                     known_subjects: list[str] | None = None) -> dict[int, str]:
+    """
+    Chapter name per page, with gaps filled from the page before.
+
+    Front matter, a full-page diagram or a page whose footer failed to extract
+    leaves a hole. Chapters run in contiguous blocks, so the previous page's
+    chapter is the right answer for a hole — much better than dropping those
+    questions into a generic bucket.
+    """
+    headers_by_page: dict[int, object] = {}
+    for entry in manifest:
+        page = int(entry.get("page", 0))
+        headers_by_page.setdefault(
+            page, entry.get("page_headers") or entry.get("page_header")
+        )
+
+    pages = sorted(headers_by_page)
+    found = {
+        page: chapter_for_page(headers_by_page[page], subject, known_subjects)
+        for page in pages
+    }
+
+    resolved: dict[int, str] = {}
+    carried: str | None = None
+    for page in pages:
+        carried = found.get(page) or carried
+        if carried:
+            resolved[page] = carried
+
+    # A page before the first chapter heading inherits from the page after it.
+    carried = None
+    for page in reversed(pages):
+        carried = resolved.get(page) or carried
+        if carried:
+            resolved.setdefault(page, carried)
+    return resolved
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Single question classifier
 # ─────────────────────────────────────────────────────────────────────────────
 
 def classify_question(entry: dict, output_dir: str, pdf_path: str | None,
                       exam_taxonomy: dict, groq_keys: list[str],
-                      use_api: bool, delay: float) -> dict:
+                      use_api: bool, delay: float,
+                      forced_subject: str | None = None,
+                      page_chapters: dict[int, str] | None = None) -> dict:
     """
-    Classify one question using Groq text API only.
+    Classify one question into subject, topic and question type.
+
+    Signals are used in order of how directly the paper states them: a forced
+    subject (a single-subject book), the chapter in the page's running line, and
+    the section banner, before anything a model infers.
 
     For image questions: extract text from the PDF page using PyMuPDF,
                          then send to Groq for classification.
     For text questions:  use the content field directly with Groq.
     """
-    q_type   = entry.get("type", "text")
+    media    = entry.get("type", "text")
     content  = entry.get("content") or ""
     rel_path = entry.get("path", "")
     page_num = entry.get("page", 0)
@@ -511,6 +676,27 @@ def classify_question(entry: dict, output_dir: str, pdf_path: str | None,
 
     classification: dict | None = None
     method = "keyword"
+
+    # ── What the paper already tells us ───────────────────────────────────────
+    # A single-subject book plus a chapter running line plus a section banner
+    # covers subject, topic and type between them, with no model involved. Where
+    # all three are present the question needs no API call at all — which is the
+    # difference between minutes and days on a whole textbook.
+    header_topic = (page_chapters or {}).get(page_num) or chapter_for_page(
+        entry.get("page_headers") or entry.get("page_header"),
+        forced_subject, list(exam_taxonomy.keys())
+    )
+    paper_type, paper_type_evidence = resolve_question_type(
+        question_text,
+        raw_answer=entry.get("raw_answer"),
+        section_type=entry.get("section_type"),
+        ai_type=None,
+    )
+    paper_knows_type = paper_type_evidence in ("question-text", "answer-key", "section-header")
+
+    if forced_subject and header_topic and paper_knows_type:
+        use_api = False
+        method = "paper"
 
     # ── Groq text classification ──────────────────────────────────────────────
     if use_api and groq_keys and len(question_text) >= MIN_USABLE_TEXT_CHARS:
@@ -553,27 +739,60 @@ def classify_question(entry: dict, output_dir: str, pdf_path: str | None,
         classification = classify_by_keywords(question_text, exam_taxonomy)
         method = "keyword"
 
-    # ── Validate against taxonomy ─────────────────────────────────────────────
-    subject = classification.get("subject", "Other")
-    topic   = classification.get("topic",   "General")
+    # ── Subject ───────────────────────────────────────────────────────────────
+    if forced_subject:
+        subject = forced_subject
+        subject_source = "forced"
+    else:
+        subject = classification.get("subject", "Other")
+        if subject not in exam_taxonomy:
+            subject = closest_key(subject, list(exam_taxonomy.keys())) or "Other"
+        subject_source = method
 
-    if subject not in exam_taxonomy:
-        subject = closest_key(subject, list(exam_taxonomy.keys())) or "Other"
+    # ── Topic ─────────────────────────────────────────────────────────────────
+    if header_topic:
+        # The book's own chapter name, kept verbatim: "IOC & Hydrocarbons" is
+        # more useful to a teacher browsing the bank than the nearest entry in a
+        # generic taxonomy, and coercing it would only lose information.
+        topic = header_topic
+        topic_source = "page-header"
+    else:
+        topic = classification.get("topic", "General")
+        valid_topics = exam_taxonomy.get(subject, ["General"])
+        if topic not in valid_topics:
+            topic = closest_key(topic, valid_topics) or valid_topics[0]
+        topic_source = method
 
-    valid_topics = exam_taxonomy.get(subject, ["General"])
-    if topic not in valid_topics:
-        topic = closest_key(topic, valid_topics) or valid_topics[0]
+    # ── Question type ─────────────────────────────────────────────────────────
+    # The paper's own wording and its answer key outrank the model here; see
+    # resolve_question_type for the full ranking.
+    raw_answer = entry.get("raw_answer")
+    question_type, type_evidence = resolve_question_type(
+        question_text,
+        raw_answer=raw_answer,
+        section_type=entry.get("section_type"),
+        ai_type=classification.get("question_type"),
+    )
 
-    txt_preview = (question_text[:60].replace("\n", " ") if question_text else "(no text)").encode("ascii", "replace").decode()
-    print(f"   Q{str(q_num):>4} ({q_type:5}) -> {subject} / {topic}  [{method}]")
+    txt_preview = console_safe(question_text[:60].replace("\n", " ") if question_text else "(no text)")
+    print(f"   Q{str(q_num):>4} ({media:5}) -> {console_safe(subject)} / {console_safe(topic)}"
+          f" / {question_type}  [{method}, type:{type_evidence}]")
     print(f"          text: \"{txt_preview}...\"")
 
     enriched = dict(entry)
     enriched["subject"]               = subject
+    enriched["subject_source"]        = subject_source
     enriched["topic"]                 = topic
+    enriched["topic_source"]          = topic_source
+    enriched["question_type"]         = question_type
+    enriched["question_type_source"]  = type_evidence
     enriched["confidence"]            = round(float(classification.get("confidence", 0.5)), 2)
     enriched["classification_method"] = method
     enriched["extracted_text"]        = question_text[:300] if question_text else None
+    # Pre-parsed answer key, so the API layer does not repeat the parsing.
+    # Both are None when the paper printed no answer — the reviewer fills it in.
+    enriched["answer_indices"]        = answer_key_letters(raw_answer) or None
+    enriched["answer_value"]          = answer_key_value(raw_answer)
     return enriched
 
 
@@ -581,24 +800,37 @@ def classify_question(entry: dict, output_dir: str, pdf_path: str | None,
 # File organiser
 # ─────────────────────────────────────────────────────────────────────────────
 
+def safe_segment(value: str, fallback: str) -> str:
+    """A single path segment: no separators, no Windows-reserved characters."""
+    cleaned = re.sub(r'[<>:"/\\|?*]', "_", str(value or "").strip())
+    cleaned = cleaned.strip(". ")           # Trailing dots/spaces are illegal on Windows.
+    return cleaned or fallback
+
+
 def organise_files(classified: list[dict], output_dir: str) -> list[dict]:
-    """Copy each question file into output/classified/<Subject>/<Topic>/."""
+    """
+    Copy each question into output/classified/<Subject>/<Topic>/<QuestionType>/.
+
+    The API mirrors this path into Supabase Storage verbatim, so the bucket ends
+    up browsable by the same hierarchy the question bank filters on.
+    """
     updated = []
     for entry in classified:
         rel_path = entry.get("path")
-        subject  = re.sub(r'[<>:"/\\|?*]', "_", entry.get("subject", "Other"))
-        topic    = re.sub(r'[<>:"/\\|?*]', "_", entry.get("topic",   "General"))
+        subject  = safe_segment(entry.get("subject"), "Other")
+        topic    = safe_segment(entry.get("topic"), "General")
+        q_type   = safe_segment(entry.get("question_type"), DEFAULT_QUESTION_TYPE)
 
         if rel_path:
             src      = os.path.join(output_dir, rel_path)
             filename = os.path.basename(rel_path)
-            dst_dir  = os.path.join(output_dir, "classified", subject, topic)
+            dst_dir  = os.path.join(output_dir, "classified", subject, topic, q_type)
             os.makedirs(dst_dir, exist_ok=True)
             dst = os.path.join(dst_dir, filename)
 
             if os.path.exists(src):
                 shutil.copy2(src, dst)
-                entry["classified_path"] = f"classified/{subject}/{topic}/{filename}"
+                entry["classified_path"] = f"classified/{subject}/{topic}/{q_type}/{filename}"
             else:
                 entry["classified_path"] = None
 
@@ -611,24 +843,30 @@ def organise_files(classified: list[dict], output_dir: str) -> list[dict]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def print_summary(classified: list[dict]) -> None:
+    """Print the Subject -> Topic -> Question Type tree the run produced."""
     from collections import Counter
     subject_counts: Counter = Counter()
     topic_counts: dict[str, Counter] = {}
+    type_counts: dict[tuple[str, str], Counter] = {}
 
     for e in classified:
         s = e.get("subject", "Other")
         t = e.get("topic",   "General")
+        q = e.get("question_type", DEFAULT_QUESTION_TYPE)
         subject_counts[s] += 1
         topic_counts.setdefault(s, Counter())[t] += 1
+        type_counts.setdefault((s, t), Counter())[q] += 1
 
     sep = "-" * 60
     print("\n" + sep)
     print("  CLASSIFICATION SUMMARY")
     print(sep)
     for subject, count in sorted(subject_counts.items()):
-        print(f"\n  [{subject}]  ({count} questions)")
+        print(f"\n  [{console_safe(subject)}]  ({count} questions)")
         for topic, tc in sorted(topic_counts[subject].items()):
-            print(f"       - {topic}: {tc}")
+            print(f"       - {console_safe(topic)}: {tc}")
+            for q_type, qc in sorted(type_counts[(subject, topic)].items()):
+                print(f"           * {q_type}: {qc}")
     print(sep + "\n")
 
 
@@ -638,7 +876,7 @@ def print_summary(classified: list[dict]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Classify extracted questions using Groq (text only, no vision API needed)",
+        description="Classify extracted questions by subject, topic and question type using Groq",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("output_dir",
@@ -650,6 +888,12 @@ def main() -> None:
                         choices=list(EXAM_TAXONOMY.keys()),
                         default="jee",
                         help="Exam type (determines subject/topic list)")
+    parser.add_argument("--subject",
+                        default=None,
+                        help="Force every question to this subject — correct and much "
+                             "faster for a single-subject paper, and it lets the "
+                             "classifier skip the API whenever the page's chapter "
+                             "heading and section banner cover the rest")
     parser.add_argument("--groq-key",
                         default=None,
                         help="Groq API key (overrides GROQ_API_KEY env variable)")
@@ -661,7 +905,7 @@ def main() -> None:
                         help="Seconds between Groq API calls")
     parser.add_argument("--no-copy",
                         action="store_true",
-                        help="Only enrich manifest, don't copy files into subject folders")
+                        help="Only enrich manifest, don't copy files into Subject/Topic/Type folders")
     args = parser.parse_args()
 
     # ── Load manifest ──────────────────────────────────────────────────────────
@@ -702,7 +946,17 @@ def main() -> None:
 
     # ── Taxonomy ───────────────────────────────────────────────────────────────
     exam_taxonomy = EXAM_TAXONOMY.get(args.exam, EXAM_TAXONOMY["general"])
-    print(f"Exam: {args.exam.upper()} | Subjects: {', '.join(exam_taxonomy.keys())}\n")
+    print(f"Exam: {args.exam.upper()} | Subjects: {', '.join(exam_taxonomy.keys())}")
+    if args.subject:
+        print(f"Subject forced to: {args.subject}")
+    print()
+
+    # ── Chapter per page ───────────────────────────────────────────────────────
+    page_chapters = chapters_by_page(manifest, args.subject, list(exam_taxonomy.keys()))
+    if page_chapters:
+        distinct = len(set(page_chapters.values()))
+        print(f"Chapters from running lines: {distinct} across "
+              f"{len(page_chapters)} page(s)\n")
 
     # ── Classify ───────────────────────────────────────────────────────────────
     classified: list[dict] = []
@@ -710,19 +964,21 @@ def main() -> None:
         q_num = entry.get("question_number", "?")
         print(f"[{idx+1:3d}/{len(manifest)}] Q{q_num}...", end="  ")
         enriched = classify_question(
-            entry        = entry,
-            output_dir   = output_dir,
-            pdf_path     = pdf_path,
-            exam_taxonomy= exam_taxonomy,
-            groq_keys    = groq_keys,
-            use_api      = use_api,
-            delay        = args.delay,
+            entry         = entry,
+            output_dir    = output_dir,
+            pdf_path      = pdf_path,
+            exam_taxonomy = exam_taxonomy,
+            groq_keys     = groq_keys,
+            use_api       = use_api,
+            delay         = args.delay,
+            forced_subject= args.subject,
+            page_chapters = page_chapters,
         )
         classified.append(enriched)
 
     # ── Organise files ─────────────────────────────────────────────────────────
     if not args.no_copy:
-        print("\nOrganising files into subject/topic folders...")
+        print("\nOrganising files into Subject/Topic/QuestionType folders...")
         classified = organise_files(classified, output_dir)
         print(f"Done -> {os.path.join(output_dir, 'classified')}")
 
